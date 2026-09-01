@@ -92,3 +92,9 @@ ruff check .
 Choose validation appropriate to the changed area; this command list is not
 an instruction to run every check for every task. Report what was validated
 and any checks that were not run.
+
+For each decided performance attempt, report the wall-time comparison, the
+mechanism supported by the trace, and the trace artifacts. Read the local
+optimization lessons before tuning and record measured decisions afterward;
+see [benchmarking](rules/benchmarking.md) and
+[optimization lessons](rules/optimization-lessons.md).
