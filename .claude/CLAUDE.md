@@ -27,6 +27,13 @@ This file is the shared project entry point; `AGENTS.md` adapts it for Codex.
   unless the user also requests fixes. Apply referenced workflows as review
   criteria rather than executing their editing steps.
 
+**Default optimization target: `models/deepseek_v4_flash_lowlat/`.** Unless a
+request names another model or directory, every performance, benchmarking, and
+tuning task in this repo — `/optimize`, `/critical-path`, `/cube-tile-tuning`,
+`/early-dispatch`, swimlane and PMU captures, and the lessons they produce —
+applies to the DeepSeek-V4-Flash low-latency variant. The other `models/`
+directories are worked on only when explicitly asked for by name.
+
 ## Read before the relevant task
 
 Read the applicable guidance before editing or executing the task. Follow a
