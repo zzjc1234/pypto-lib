@@ -1727,8 +1727,9 @@ class TestConfigForwarding:
                 config=dict(platform="a2a3sim", pto_isa_commit="deadbeef"),
             )
 
+    @pytest.mark.parametrize("swimlane_level,pmu_level", [(3, 0), (4, 0), (4, 2)])
     def test_dfx_flags_reach_the_dispatch_as_dfx_options(
-        self, three_kinds_specs, build_dir,
+        self, three_kinds_specs, build_dir, swimlane_level, pmu_level,
     ):
         """DFX flags ride the RunConfig and surface through its dfx_options()."""
 
@@ -1742,13 +1743,14 @@ class TestConfigForwarding:
             r = run(
                 fn=object(),
                 specs=three_kinds_specs,
-                config=dict(enable_dump_args=2, enable_chip_swimlane=3),
+                config=dict(enable_dump_args=2, enable_chip_swimlane=swimlane_level, enable_pmu=pmu_level),
             )
 
         assert r.passed, f"unexpected failure: {r.error}"
         dfx = captured["config"].dfx_options()
         assert dfx.enable_dump_args == 2
-        assert dfx.enable_chip_swimlane == 3
+        assert dfx.enable_chip_swimlane == swimlane_level
+        assert dfx.enable_pmu == pmu_level
 
 
 def _set_mtime(path: Path, mtime: float) -> None:
