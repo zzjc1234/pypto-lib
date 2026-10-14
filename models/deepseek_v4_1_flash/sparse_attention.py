@@ -70,39 +70,45 @@ M_TILE = 16
 
 ATTENTION_TILE = 32
 
-def golden_prefill_c1a_attention(query: torch.Tensor, window_cache: torch.Tensor, window_indices: torch.Tensor, compressed_cache: torch.Tensor, compressed_indices: torch.Tensor, sink: torch.Tensor) -> torch.Tensor:
-    """Mirror C1A tiled online softmax, BF16 PV, and its FP32 first-vector patch."""
-    import torch
+def golden_prefill_c1a_attention(
+    query: torch.Tensor,
+    window_cache: torch.Tensor,
+    window_indices: torch.Tensor,
+    compressed_cache: torch.Tensor,
+    compressed_indices: torch.Tensor,
+    sink: torch.Tensor,
+) -> torch.Tensor:
+    """Independent Torch reference for the shared 128-key online BF16 PV arithmetic."""
+
     output = torch.empty_like(query)
     width = query.shape[-1]
-    for token in range(query.shape[0]):
-        q = query[token].float()
-        maximum = q.new_full((q.shape[0],), -1e+30)
-        denominator = q.new_zeros(q.shape[0])
+    # Keep CPU gather temporaries bounded for 8K chunks.
+    for token_begin in range(0, query.shape[0], 128):
+        token_end = min(token_begin + 128, query.shape[0])
+        q = query[token_begin:token_end].float()
+        maximum = q.new_full(q.shape[:-1], -1e30)
+        denominator = q.new_zeros(q.shape[:-1])
         numerator = torch.zeros_like(q)
         for cache, indices in ((window_cache, window_indices), (compressed_cache, compressed_indices)):
             flat_cache = cache.flatten(0, 1).squeeze(-2)
-            for begin in range(0, indices.shape[-1], ATTENTION_TILE):
-                rows = indices[token, begin:begin + ATTENTION_TILE].long()
+            for begin in range(0, indices.shape[-1], KEY_TILE):
+                rows = indices[token_begin:token_end, begin:begin + KEY_TILE].long()
                 valid = rows >= 0
-                if not bool(valid.any()):
-                    continue
-                kv = flat_cache[rows.clamp_min(0)].clone()
-                kv[~valid] = 0
-                scores = torch.matmul(q, kv.float().T) * width ** (-0.5)
-                scores = scores + (valid.float() - 1).unsqueeze(0) * 1e+30
+                kv = flat_cache[rows.clamp_min(0)].to(query.dtype).float()
+                kv = kv.masked_fill(~valid[..., None], 0)
+                scores = torch.einsum("thd,tkd->thk", q, kv) * width**-0.5
+                scores = scores + (valid.float() - 1).unsqueeze(1) * 1e30
                 next_maximum = torch.maximum(maximum, scores.amax(dim=-1))
                 correction = torch.exp(maximum - next_maximum)
-                probability = torch.exp(scores - next_maximum.unsqueeze(-1)) * valid.unsqueeze(0)
+                probability = torch.exp(scores - next_maximum.unsqueeze(-1)) * valid.unsqueeze(1)
                 denominator = denominator * correction + probability.sum(dim=-1)
-                weighted = torch.matmul(probability.to(torch.bfloat16).float(), kv.float())
-                weighted[::M_TILE, :16] = (probability[::M_TILE].unsqueeze(-1) * kv[:, :16].float().unsqueeze(0)).sum(dim=1)
+                weighted = torch.einsum("thk,tkd->thd", probability.bfloat16().float(), kv)
                 numerator = numerator * correction.unsqueeze(-1) + weighted
                 maximum = next_maximum
         final_maximum = torch.maximum(maximum, sink.float())
         correction = torch.exp(maximum - final_maximum)
         denominator = denominator * correction + torch.exp(sink.float() - final_maximum)
-        output[token] = (numerator * (correction / denominator).unsqueeze(-1)).to(query.dtype)
+        output[token_begin:token_end] = (numerator * (correction / denominator).unsqueeze(-1)).to(query.dtype)
     return output
 
 def golden_paged_sparse_attention_stats(
@@ -513,9 +519,10 @@ def attend_packed(
     sink: pl.Tensor[[LOCAL_H], pl.FP32],
     output: pl.Tensor[[T_DYN, LOCAL_H * HEAD_DIM], pl.BF16],
     num_tokens: pl.Scalar[pl.INT32],
+    source_ready: pl.Scalar[pl.TASK_ID],
 ):
     marker = pl.create_tensor([1, 16], dtype=pl.FP32)
-    with pl.spmd(1, name_hint="sparse_query_ready") as ready:
+    with pl.spmd(1, name_hint="sparse_query_ready", deps=[source_ready]) as ready:
         block = pl.tile.get_block_idx()
         marker[block:block + 1, :] = pl.cast(query[0:1, 0:16], pl.FP32)
 
@@ -579,9 +586,10 @@ def sparse_mla(
     output: pl.Out[pl.Tensor[[T_DYN, LOCAL_H * HEAD_DIM], pl.BF16]],
 ):
     rows = pl.tensor.dim(query, 0)
+    source_ready = pl.system.task_dummy(deps=[])
     output = attend_packed(
         query, window_indices, window, window_scale, compressed_indices,
-        compressed, compressed_scale, sink, output, rows,
+        compressed, compressed_scale, sink, output, rows, source_ready,
     )
     return output
 
@@ -818,6 +826,7 @@ def golden_compressed_attention(
     attention_fn: Callable | None = None,
     output_dtype: torch.dtype | None = None,
     query_start_loc: torch.Tensor | None = None,
+    sequential_query: bool = False,
 ) -> AttentionGoldenResult:
     """Evaluate C2A/C1A full, reindex, or reuse with paged cache state."""
     query, window_kv, query_latent = qkv_proj_rope(
@@ -832,6 +841,7 @@ def golden_compressed_attention(
         kv_norm_weight,
         rope_cos,
         rope_sin,
+        sequential_query=sequential_query,
     )
     window_payload, updated_window_scale = _publish_quantized_cache(
         window_cache,

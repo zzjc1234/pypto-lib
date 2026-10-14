@@ -152,10 +152,13 @@ def make_c1a_sp_rank(mode, epochs=1):
                         topk_indices[row:row + 1, :] = pl.full([1, INDEX_TOPK], dtype=pl.INT32, value=-1)
             if is_full:
                 positions = pl.tensor.dim(candidate_mask, 1)
-                for row in pl.spmd(group_tokens, name_hint='c1a_sp_inactive_candidates'):
-                    if row >= active:
-                        for col in pl.range(0, positions, 128):
-                            candidate_mask[row:row + 1, col:col + 128] = pl.cast(pl.full([1, 128], dtype=pl.INT32, value=0), pl.UINT8)
+                for worker in pl.spmd(64, name_hint='c1a_sp_inactive_candidates'):
+                    for row in pl.range(worker, group_tokens, 64):
+                        if row >= active:
+                            for col in pl.range(0, positions, 128):
+                                valid = pl.min(128, positions - col)
+                                zero = pl.cast(pl.full([1, 128], dtype=pl.INT32, value=0), pl.UINT8)
+                                candidate_mask[row:row + 1, col:col + 128] = pl.set_validshape(zero, 1, valid)
             if is_full:
                 full_operator(attn_input, wq_a, wq_a_scale, q_norm_weight, wq_b, wq_b_scale, wkv, wkv_scale, kv_norm_weight, attn_sink, wo_a, wo_b, wo_b_scale, rope_cos, rope_sin, window_slots, window_indices, window_cache, window_cache_scale, compressed_cache, compressed_cache_scale, request_ids, compressed_lens, index_cache, index_cache_scale, index_block_table, compressed_rope_cos, compressed_rope_sin, compressor_wkv, compressor_norm_weight, compressed_slots, index_wk, index_norm_weight, index_wq_b, index_wq_b_scale, index_weights_proj, topk_indices, candidate_mask, output_window, output_arrived, attn_output, rank // TP_SIZE * TP_SIZE, rank % TP_SIZE, active, attention_epoch + step)
             elif is_reindex:
@@ -228,7 +231,8 @@ TOKEN_NAMES = {'rope_cos', 'rope_sin', 'window_slots', 'window_indices', 'compre
 def c1a_sp_reference_attention(mode, epochs, tensors, x, ranks):
     """Run the independent C1A reference in full token order before sharding."""
     reference = getattr(attn, f'golden_prefill_attn_c1a_{mode}')
-    names = tuple(inspect.signature(reference).parameters)
+    names = tuple(name for name, parameter in inspect.signature(reference).parameters.items()
+                  if parameter.default is inspect.Parameter.empty)
     active = int(tensors['num_tokens'][ranks[0], 0])
     partials, results = ([], [])
     for rank in ranks:
@@ -282,7 +286,8 @@ def build_c1a_sp_specs(args, initial_state):
             value = fixture[name]
         values[name] = torch.cat([value.view(torch.uint8)] * args.dp).view(value.dtype)
     hc_keys = common.HC_INPUT_NAMES
-    groups = [common.make_hc_inputs(tokens, args.seed + group * 7919, 'mixed') for group in range(args.dp)]
+    seed = getattr(args, "seed", 17)
+    groups = [common.make_hc_inputs(tokens, seed + group * 7919, 'mixed') for group in range(args.dp)]
     for name in hc_keys:
         if name in ('x_hc', 'pre_mix'):
             values[name] = torch.cat([common.token_shards(group[name], local) for group in groups])
@@ -383,8 +388,8 @@ def validate_c1a_sp(mode, args):
     args.dp_tokens = ([int(value) for value in args.dp_tokens.split(",")] if args.dp_tokens else [active] * args.dp)
     if len(args.dp_tokens) != args.dp:
         raise ValueError("provide one active count per DP group")
-    if not 1 <= args.tokens <= 128 or not 1 <= args.epochs <= 1000:
-        raise ValueError("tokens must be in [1, 128] and epochs in [1, 1000]")
+    if not 1 <= args.tokens <= CASE_MAX_TOKENS or not 1 <= args.epochs <= 1000:
+        raise ValueError(f"tokens must be in [1, {CASE_MAX_TOKENS}] and epochs in [1, 1000]")
     devices = [int(value) for value in args.device.split(",")]
     if len(devices) != TP_SIZE * args.dp or len(set(devices)) != len(devices):
         raise ValueError("device IDs must name TP*DP distinct devices")

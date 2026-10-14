@@ -76,7 +76,7 @@ def prefill_c1a_publish_window(
             encoded_row = pl.reshape(encoded, [1, HEAD_DIM // 16])
             encoded_valid = pl.set_validshape(encoded_row, 1, HEAD_DIM // 32)
             scale_flat[slot:slot + 1, :] = encoded_valid
-    return cache, scales
+    return publish_tid
 
 
 def make_mx_projection(width, output_width, output_dtype=pl.BF16, *, name_hint="attention_mx_projection", n_tile=N_TILE):
@@ -394,9 +394,12 @@ def golden_qkv_proj_rope(
     kv_norm_weight: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
+    *,
+    sequential_query: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Project normalized query latent and shared KV, then rotate their RoPE tails."""
-    qr = golden_rms_norm(mxfp8_linear(x, wq_a, wq_a_scale), q_norm_weight)
+    projected = mxfp8_linear(x, wq_a, wq_a_scale, sequential_groups=sequential_query)
+    qr = golden_rms_norm(projected, q_norm_weight)
     head_dim = wkv.shape[-1]
     num_heads = wq_b.shape[-1] // head_dim
     q = mxfp8_linear(qr, wq_b, wq_b_scale).unflatten(-1, (num_heads, head_dim))

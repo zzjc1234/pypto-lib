@@ -370,14 +370,17 @@ def _hierarchical_sparse_indexer(
         maxima = pl.tile.set_validshape(maxima, 1, valid_blocks)
         pl.store(maxima, [token, block_begin], block_scores)
 
-    with pl.spmd(tokens * mask_tiles, name_hint="c1a_candidate_clear") as clear_tid:
-        work = pl.tile.get_block_idx()
-        token = work // mask_tiles
-        tile = work % mask_tiles
-        position = tile * 128
-        empty_i32 = pl.tile.full([1, 128], dtype=pl.INT32, value=0)
-        empty = pl.cast(empty_i32, pl.UINT8)
-        pl.store(empty, [token, position], aligned_mask)
+    mask_work = tokens * mask_tiles
+    mask_workers = pl.min(mask_work, 64)
+    with pl.spmd(mask_workers, name_hint="c1a_candidate_clear", allow_early_resolve=False) as clear_tid:
+        worker = pl.tile.get_block_idx()
+        for work in pl.range(worker, mask_work, mask_workers):
+            token = work // mask_tiles
+            tile = work % mask_tiles
+            position = tile * 128
+            empty_i32 = pl.tile.full([1, 128], dtype=pl.INT32, value=0)
+            empty = pl.cast(empty_i32, pl.UINT8)
+            pl.store(empty, [token, position], aligned_mask)
 
     arena = pl.create_tensor(
         [tokens * CANDIDATE_MAX_LEAVES, CANDIDATE_PAIR_WIDTH],
@@ -432,15 +435,17 @@ def _hierarchical_sparse_indexer(
                         # Each token owns a distinct 128-byte-aligned row.
                         pl.write(aligned_mask, [token, position], pl.cast(1, pl.UINT8))
 
-    with pl.spmd(tokens * mask_tiles, name_hint="c1a_candidate_publish", deps=[topk_tid]) as publish_tid:
-        work = pl.tile.get_block_idx()
-        token = work // mask_tiles
-        tile = work % mask_tiles
-        position = tile * 128
-        valid = pl.min(128, positions - position)
-        mask = pl.load(aligned_mask, [token, position], [1, 128])
-        mask = pl.tile.set_validshape(mask, 1, valid)
-        pl.store(mask, [token, position], candidate_mask)
+    with pl.spmd(mask_workers, name_hint="c1a_candidate_publish", deps=[topk_tid],
+                 allow_early_resolve=False) as publish_tid:
+        worker = pl.tile.get_block_idx()
+        for work in pl.range(worker, mask_work, mask_workers):
+            token = work // mask_tiles
+            tile = work % mask_tiles
+            position = tile * 128
+            valid = pl.min(128, positions - position)
+            mask = pl.load(aligned_mask, [token, position], [1, 128])
+            mask = pl.tile.set_validshape(mask, 1, valid)
+            pl.store(mask, [token, position], candidate_mask)
     return publish_tid
 
 

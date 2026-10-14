@@ -273,6 +273,7 @@ def mxfp8_linear(
     packed_weight_scale: torch.Tensor | None,
     *,
     output_dtype: torch.dtype | None = None,
+    sequential_groups: bool = False,
 ) -> torch.Tensor:
     """Evaluate a linear projection with an optional explicit output dtype."""
     if packed_weight_scale is None:
@@ -285,7 +286,13 @@ def mxfp8_linear(
     weight_groups = weight.float().unflatten(0, (-1, MX_GROUP))
     partials = torch.einsum("...gk,gkn->...gn", activation.float(), weight_groups)
     partials = partials * activation_scale.unsqueeze(-1) * weight_scale
-    return partials.sum(dim=-2).to(output_dtype or x.dtype)
+    if sequential_groups:
+        accumulated = torch.zeros_like(partials[..., 0, :])
+        for group in range(partials.shape[-2]):
+            accumulated = accumulated + partials[..., group, :]
+    else:
+        accumulated = partials.sum(dim=-2)
+    return accumulated.to(output_dtype or x.dtype)
 
 
 # E8M0 has no native dtype in some PyTorch versions, so it is always carried as uint8.

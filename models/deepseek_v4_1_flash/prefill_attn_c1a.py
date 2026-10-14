@@ -30,7 +30,7 @@ from config import (
     WINDOW_CACHE_GROUP,
 )
 
-from qkv_proj_rope import kv_proj_rope, q_proj_rope, prefill_c1a_publish_window
+from qkv_proj_rope import kv_proj_rope, prefill_q_proj_rope as q_proj_rope, prefill_c1a_publish_window
 from sparse_attention import attend_packed
 from o_proj import prefill_o_proj
 from compressor import publish_compressed_cache
@@ -40,7 +40,7 @@ from qkv_proj_rope import (
     make_rope,
 )
 from rmsnorm import rms_norm
-from qkv_proj_rope import q_proj_qr
+from qkv_proj_rope import prefill_q_proj_qr as q_proj_qr
 from prefill_c1a_indexer import make_paged_indexer
 from utils import AttentionGoldenResult
 from sparse_attention import golden_compressed_attention
@@ -155,6 +155,7 @@ def prefill_c1a_partial(
     compressed_indices: pl.Tensor[[T_DYN, INDEX_TOPK], pl.INT32],
     output: pl.Tensor[[T_DYN, D], pl.FP32],
     num_tokens: pl.Scalar[pl.INT32],
+    source_ready: pl.Scalar[pl.TASK_ID],
 ):
     """Compute one TP rank's ratio-1 compressed-attention output."""
     tokens = pl.tensor.dim(x, 0)
@@ -162,14 +163,13 @@ def prefill_c1a_partial(
     q_proj_rope(query_latent, wq_b, wq_b_scale, rope_cos, rope_sin, query, num_tokens)
     window_kv = pl.create_tensor([tokens, HEAD_DIM], dtype=pl.BF16)
     kv_proj_rope(x, wkv, wkv_scale, kv_norm_weight, rope_cos, rope_sin, window_kv, num_tokens)
-    cache_ready = pl.system.task_dummy(deps=[])
-    prefill_c1a_publish_window(
+    window_ready = prefill_c1a_publish_window(
         window_kv,
         window_slots,
         window_cache,
         window_cache_scale,
         num_tokens,
-        cache_ready,
+        source_ready,
     )
 
     attended = pl.create_tensor([tokens, LOCAL_H * HEAD_DIM], dtype=pl.BF16)
@@ -184,6 +184,7 @@ def prefill_c1a_partial(
         attn_sink,
         attended,
         num_tokens,
+        window_ready,
     )
     prefill_o_proj(attended, wo_a, wo_b, wo_b_scale, rope_cos, rope_sin, output, num_tokens)
     return output
@@ -341,6 +342,7 @@ def golden_prefill_attn_c1a_full(
         request_ids=request_ids,
         candidate_mask=None,
         attention_fn=golden_prefill_c1a_attention,
+        sequential_query=True,
         output_dtype=torch.float32,
     )
 
@@ -416,7 +418,7 @@ def make_prefill_attn_c1a_full(indexer, reducer=prefill_tp_output_all_reduce, ou
                 compressed_rotated,
                 num_tokens,
             )
-            publish_compressed_cache(
+            compressed_ready = publish_compressed_cache(
                 compressed_rotated,
                 compressed_slots,
                 compressed_cache,
@@ -466,6 +468,7 @@ def make_prefill_attn_c1a_full(indexer, reducer=prefill_tp_output_all_reduce, ou
                 num_tokens,
                 index_ready,
             )
+            source_ready = pl.system.task_dummy(deps=[compressed_ready, indexer_completion])
             prefill_c1a_partial(
                 x,
                 query_latent,
@@ -489,6 +492,7 @@ def make_prefill_attn_c1a_full(indexer, reducer=prefill_tp_output_all_reduce, ou
                 topk_indices,
                 partial,
                 num_tokens,
+                source_ready,
             )
         reducer(
             partial,
@@ -579,6 +583,7 @@ def golden_prefill_attn_c1a_reuse(
         request_ids=None,
         candidate_mask=None,
         attention_fn=golden_prefill_c1a_attention,
+        sequential_query=True,
         output_dtype=torch.float32,
     )
 
@@ -624,6 +629,7 @@ def make_prefill_attn_c1a_reuse(reducer=prefill_tp_output_all_reduce, output_tok
         if num_tokens > 0:
             query_latent = pl.create_tensor([tokens, Q_LORA], dtype=pl.BF16)
             q_proj_qr(x, wq_a, wq_a_scale, q_norm_weight, query_latent, num_tokens)
+            source_ready = pl.system.task_dummy(deps=[])
             prefill_c1a_partial(
                 x,
                 query_latent,
@@ -647,6 +653,7 @@ def make_prefill_attn_c1a_reuse(reducer=prefill_tp_output_all_reduce, output_tok
                 compressed_indices,
                 partial,
                 num_tokens,
+                source_ready,
             )
         reducer(
             partial,
@@ -745,6 +752,7 @@ def golden_prefill_attn_c1a_reindex(
         request_ids=request_ids,
         candidate_mask=candidate_mask,
         attention_fn=golden_prefill_c1a_attention,
+        sequential_query=True,
         output_dtype=torch.float32,
     )
 
@@ -843,6 +851,7 @@ def make_prefill_attn_c1a_reindex(indexer, reducer=prefill_tp_output_all_reduce,
                 topk_indices,
                 partial,
                 num_tokens,
+                indexer_completion,
             )
         reducer(
             partial,

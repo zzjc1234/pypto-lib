@@ -91,7 +91,7 @@ CASE_DEFAULT = 'multi_1k'
 
 CASE_TOKENS = 64
 
-CASE_MAX_TOKENS = 128
+CASE_MAX_TOKENS = C.PREFILL_MAX_TOKENS
 
 CASE_PAGE = 128
 
@@ -272,7 +272,8 @@ def golden_prefill_tp_attention(attention_fn: Callable, hidden: torch.Tensor, at
 def apply_distributed_golden(mode: str, golden_fn: Callable, tensors: dict[str, torch.Tensor], active_tokens: int | None=None) -> None:
     import torch
     from config import FLASH as M, TP_SIZE
-    parameter_names = tuple(inspect.signature(golden_fn).parameters)
+    parameter_names = tuple(name for name, parameter in inspect.signature(golden_fn).parameters.items()
+                            if parameter.default is inspect.Parameter.empty)
     token_input_names = {'x', 'rope_cos', 'rope_sin', 'window_slots', 'window_indices', 'request_ids', 'compressed_lens', 'compressed_rope_cos', 'compressed_rope_sin', 'compressed_slots', 'candidate_mask', 'compressed_indices'}
     results = []
     for rank in range(TP_SIZE):
@@ -320,7 +321,7 @@ def _golden_index_scores(mode: str, rank: int, cache_outputs: dict[str, torch.Te
     index_payload = cache_outputs['index_cache'] if mode == 'full' else inputs['index_cache']
     index_scale = cache_outputs['index_cache_scale'] if mode == 'full' else inputs['index_cache_scale']
     index_value = dequantize_mxfp4_cache(index_payload[rank], index_scale[rank], group_size=INDEX_CACHE_GROUP, scale_format='e8m0').to(torch.bfloat16)
-    _, _, query_latent = qkv_proj_rope(inputs['x'][rank], inputs['wq_a'][rank], inputs['wq_a_scale'][rank], inputs['q_norm_weight'][rank], inputs['wq_b'][rank], inputs['wq_b_scale'][rank], inputs['wkv'][rank], inputs['wkv_scale'][rank], inputs['kv_norm_weight'][rank], inputs['rope_cos'][rank], inputs['rope_sin'][rank])
+    _, _, query_latent = qkv_proj_rope(inputs['x'][rank], inputs['wq_a'][rank], inputs['wq_a_scale'][rank], inputs['q_norm_weight'][rank], inputs['wq_b'][rank], inputs['wq_b_scale'][rank], inputs['wkv'][rank], inputs['wkv_scale'][rank], inputs['kv_norm_weight'][rank], inputs['rope_cos'][rank], inputs['rope_sin'][rank], sequential_query=True)
     candidates = inputs['candidate_mask'][rank] if mode == 'reindex' else None
     scores, _ = paged_indexer(inputs['x'][rank], query_latent, inputs['request_ids'][rank], index_value, inputs['index_block_table'][rank], inputs['compressed_lens'][rank], inputs['index_wq_b'][rank], inputs['index_wq_b_scale'][rank], inputs['index_weights_proj'][rank], inputs['rope_cos'][rank], inputs['rope_sin'][rank], candidates=candidates, topk=INDEX_TOPK)
     return scores
@@ -407,7 +408,7 @@ def _selected_output_reference(inputs: dict[str, torch.Tensor], expected_outputs
         def tensor(name: str) -> torch.Tensor:
             source = expected_outputs if name in expected_outputs else inputs
             return source[name][rank]
-        query, _, _ = qkv_proj_rope(tensor('x')[:active], tensor('wq_a'), tensor('wq_a_scale'), tensor('q_norm_weight'), tensor('wq_b'), tensor('wq_b_scale'), tensor('wkv'), tensor('wkv_scale'), tensor('kv_norm_weight'), tensor('rope_cos')[:active], tensor('rope_sin')[:active])
+        query, _, _ = qkv_proj_rope(tensor('x')[:active], tensor('wq_a'), tensor('wq_a_scale'), tensor('q_norm_weight'), tensor('wq_b'), tensor('wq_b_scale'), tensor('wkv'), tensor('wkv_scale'), tensor('kv_norm_weight'), tensor('rope_cos')[:active], tensor('rope_sin')[:active], sequential_query=True)
         window = dequantize_mxfp8_cache(tensor('window_cache'), tensor('window_cache_scale'))
         compressed = dequantize_mxfp4_cache(tensor('compressed_cache'), tensor('compressed_cache_scale'), group_size=COMPRESSED_CACHE_GROUP, scale_format='e4m3')
         attended = golden_prefill_c1a_attention(query, window.to(query.dtype), tensor('window_indices')[:active], compressed.to(query.dtype), selected[rank], tensor('attn_sink'))
@@ -616,8 +617,15 @@ def build_forward_metadata(
     window_block_table: torch.Tensor,
     compressed_block_tables: Mapping[int, torch.Tensor],
     state_block_tables: Mapping[int, torch.Tensor],
+    *,
+    tp_shard_capacity: int | None = None,
 ) -> ForwardMetadata:
-    """Lower engine inputs for packed prefill or one-token-per-request decode."""
+    """Lower packed request metadata and optional contiguous sequence-parallel ownership.
+
+    Omit tp_shard_capacity for the historical interleaved-owner ABI. For sequence-parallel
+    execution, pass its physical local residual capacity, including padding and
+    ranks with no active rows. Ownership must not depend on the active count.
+    """
     if query_start_loc.ndim != 1 or kv_seq_lens.ndim != 1:
         raise ValueError("query_start_loc and kv_seq_lens must be one-dimensional")
     if query_start_loc.numel() != kv_seq_lens.numel() + 1:
@@ -636,6 +644,17 @@ def build_forward_metadata(
         if not torch.equal(previous, compressed_block_tables[source]):
             raise ValueError(f"compression ratio {ratio} sources must share one compressed block table")
     request_ids = request_ids_from_starts(query_start_loc)
+    token_rows = torch.arange(request_ids.numel(), device=request_ids.device, dtype=torch.int32)
+    if tp_shard_capacity is None:
+        token_owners = token_rows.remainder(TP_SIZE)
+    else:
+        if isinstance(tp_shard_capacity, bool) or not isinstance(tp_shard_capacity, Integral):
+            raise ValueError("tp_shard_capacity must be a positive integer")
+        if not 1 <= tp_shard_capacity <= (C.PREFILL_MAX_TOKENS + TP_SIZE - 1) // TP_SIZE:
+            raise ValueError("tp_shard_capacity is outside the prefill bound")
+        if request_ids.numel() > TP_SIZE * tp_shard_capacity:
+            raise ValueError("scheduled rows exceed the physical TP shard capacity")
+        token_owners = torch.div(token_rows, tp_shard_capacity, rounding_mode="floor")
     logit_rows = torch.where(query_lens > 0, query_start_loc[1:].to(torch.int64) - 1, -1).to(torch.int32)
     local_offsets = torch.arange(request_ids.numel(), device=request_ids.device)
     local_offsets -= query_start_loc[request_ids.to(torch.long)].to(local_offsets.dtype)
@@ -703,9 +722,7 @@ def build_forward_metadata(
         query_lens=query_lens.to(torch.int32),
         logit_row_indices=logit_rows,
         token_to_req_indices=request_ids,
-        moe_token_owners=torch.arange(
-            request_ids.numel(), device=request_ids.device, dtype=torch.int32
-        ).remainder(TP_SIZE),
+        moe_token_owners=token_owners,
         position_ids=positions.to(torch.int32),
         kv_seq_lens=kv_seq_lens.to(torch.int32),
         new_kv_seq_lens=new_kv_seq_lens.to(torch.int32),

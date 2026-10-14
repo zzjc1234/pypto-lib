@@ -70,7 +70,7 @@ CAPACITY = _shape_options.capacity
 if C.TP_SIZE != 1 or C.EP_SIZE not in (4, 8) or _shape_options.dp != C.EP_SIZE:
     raise ValueError("prefill requires TP1 with EP4/DP4 or EP8/DP8")
 if not 16 <= CAPACITY <= C.PREFILL_MAX_TOKENS or CAPACITY % 16:
-    raise ValueError("--capacity must be between 16 and 4096 and a multiple of 16")
+    raise ValueError(f"--capacity must be between 16 and {C.PREFILL_MAX_TOKENS} and a multiple of 16")
 C.set_moe_tokens(CAPACITY)
 
 from hc_head import hc_head
