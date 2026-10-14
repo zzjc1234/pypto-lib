@@ -928,8 +928,8 @@ def prefill_compressor_projection(
             tail_weight[k0 : k0 + COMPRESSOR_K_TILE, n0 : n0 + N_TILE] = tail
     output_blocks = (num_tokens + M_TILE - 1) // M_TILE * (HEAD_DIM // N_TILE)
     blocks = output_blocks * PREFILL_COMPRESSOR_SEGMENTS
-    # The synchronous mixed cohort must fit the target A5 core count.
-    workers = pl.min(blocks, 16)
+    # Synchronous workers must fit both the physical and simulator core count.
+    workers = pl.min(blocks, pl.min(16, pl.system.available_cluster_count()))
     with pl.spmd(workers, name_hint="prefill_compressor_cube", deps=[split_tid], sync_start=True) as cube_tid:
         worker = pl.tile.get_block_idx()
         for block in pl.range(worker, blocks, workers):

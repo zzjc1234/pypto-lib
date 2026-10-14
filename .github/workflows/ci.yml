@@ -191,6 +191,9 @@ jobs:
           build-namespace: ${{ matrix.platform }}
           pip-cache-name: pip-sim
           toolchain: bundle
+          # Match the daily simulator sweep: V4.1-Flash needs the E8M0 dtype
+          # absent from torch 2.6. Keep the A2/A3 leg on its existing version.
+          torch-version: ${{ matrix.platform == 'a5sim' && 'torch==2.10.0' || 'torch==2.6.0' }}
 
       - name: Run ${{ matrix.platform }} tests
         shell: bash

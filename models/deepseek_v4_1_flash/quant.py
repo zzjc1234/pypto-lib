@@ -192,6 +192,27 @@ def quantize_mxfp4_weight(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Ten
     return payload, encode_e8m0(scale)
 
 
+def quantize_swa_cache(value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize SWA to E4M3 payloads and group-32 power-of-two BF16 scales."""
+    if value.shape[-1] % MX_GROUP:
+        raise ValueError("SWA cache width must be divisible by 32")
+    grouped = value.float().unflatten(-1, (-1, MX_GROUP))
+    maximum = grouped.abs().amax(dim=-1).clamp_min(1e-4)
+    fraction, exponent = torch.frexp(maximum * (1.0 / 448.0))
+    scale = torch.ldexp(torch.ones_like(fraction), exponent - (fraction == 0.5).int())
+    payload = (grouped / scale.unsqueeze(-1)).clamp(-448.0, 448.0)
+    return payload.flatten(-2).to(torch.float8_e4m3fn), scale.to(torch.bfloat16)
+
+
+def dequantize_swa_cache(payload: torch.Tensor, scale_bf16: torch.Tensor) -> torch.Tensor:
+    """Decode the BF16 scale storage used only by SWA window caches."""
+    if scale_bf16.dtype != torch.bfloat16:
+        raise TypeError("SWA cache scales must use BF16 storage")
+    if payload.shape[:-1] != scale_bf16.shape[:-1] or payload.shape[-1] != scale_bf16.shape[-1] * MX_GROUP:
+        raise ValueError("SWA payload and group-32 scale shapes do not match")
+    return payload.float() * scale_bf16.float().repeat_interleave(MX_GROUP, dim=-1)
+
+
 def quantize_mxfp8_cache(value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Quantize the last dimension to E4M3 payload and group-32 E8M0 scales."""
     if value.shape[-1] % MX_GROUP:

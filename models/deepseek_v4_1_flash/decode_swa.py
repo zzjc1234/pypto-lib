@@ -28,14 +28,15 @@ from config import (
 
 
 
-import decode_attn_swa as swa
 
 # PyPTO resolves inline calls and JIT-body constants only from direct names.
 from config import LOCAL_T_DYN
-from decode_cp_allgather import decode_tp_input_all_gather
-from decode_attn_swa import decode_attn_swa, decode_attn_swa_sharded
+from decode_cp_allgather import decode_tp_input_all_gather, slab_owner
+from decode_attn_swa import (
+    decode_attn_swa, decode_attn_swa_sharded,
+    decode_attn_swa_e8m0, decode_attn_swa_sharded_e8m0,
+)
 from hc_pre import attention_pre
-from decode_cp_allgather import slab_owner
 from hc_post import mhc_post
 
 
@@ -57,7 +58,7 @@ MX_GROUP = M.weight_block_size[0]
 KIND = "SWA"
 REPRESENTATIVE_LAYER_ID = 0
 KERNEL_READY = True
-LEAF_NAMES = tuple(name for name in swa.INPUT_NAMES if name != "x")
+LEAF_NAMES = tuple(name for name in _decode_utils.SWA_INPUT_NAMES if name != "x")
 ATTENTION_SPEC_NAMES = (
     *_decode_utils.BOUNDARY_PREFIX_NAMES,
     *LEAF_NAMES,
@@ -80,184 +81,155 @@ def skip_reason(layer_id=REPRESENTATIVE_LAYER_ID):
     return None if KERNEL_READY else "SWA attention half-layer composition is pending"
 
 
-@pl.jit.inline(auto_scope=False)
-def decode_swa(
-    x_hc: pl.Tensor[[T_DYN, HC_MULT, D], pl.FP32],
-    incoming_pre_mix: pl.Tensor[[T_DYN, HC_MULT], pl.FP32],
-    hc_attn_fn: pl.Tensor[[MIX_HC, HC_DIM], pl.FP32],
-    hc_attn_scale: pl.Tensor[[3], pl.FP32],
-    hc_attn_base: pl.Tensor[[MIX_HC], pl.FP32],
-    attn_norm_weight: pl.Tensor[[D], pl.BF16],
-    wq_a: pl.Tensor[[D, Q_LORA], pl.FP8E4M3FN],
-    wq_a_scale: pl.Tensor[[D // MX_GROUP, Q_LORA], pl.FP8E8M0, pl.MX_B_NN],
-    q_norm_weight: pl.Tensor[[Q_LORA], pl.BF16],
-    wq_b: pl.Tensor[[Q_LORA, LOCAL_H * HEAD_DIM], pl.FP8E4M3FN],
-    wq_b_scale: pl.Tensor[[Q_LORA // MX_GROUP, LOCAL_H * HEAD_DIM], pl.FP8E8M0, pl.MX_B_NN],
-    wkv: pl.Tensor[[D, HEAD_DIM], pl.FP8E4M3FN],
-    wkv_scale: pl.Tensor[[D // MX_GROUP, HEAD_DIM], pl.FP8E8M0, pl.MX_B_NN],
-    kv_norm_weight: pl.Tensor[[HEAD_DIM], pl.BF16],
-    attn_sink: pl.Tensor[[LOCAL_H], pl.FP32],
-    wo_a: pl.Tensor[[LOCAL_O_GROUPS, O_LORA, O_GROUP_IN], pl.BF16],
-    wo_b: pl.Tensor[[LOCAL_O_WIDTH, D], pl.FP8E4M3FN],
-    wo_b_scale: pl.Tensor[[LOCAL_O_WIDTH // MX_GROUP, D], pl.FP8E8M0, pl.MX_B_NN],
-    rope_cos: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
-    rope_sin: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
-    window_slots: pl.Tensor[[T_DYN], pl.INT64],
-    window_indices: pl.Tensor[[T_DYN, 128], pl.INT32],
-    window_cache: pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM], pl.FP8E4M3FN],
-    window_cache_scale: pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM // WINDOW_CACHE_GROUP], pl.FP8E8M0],
-    attention_output: pl.Tensor[[T_DYN, D], pl.BF16],
-    attention_hidden: pl.Tensor[[T_DYN, HC_MULT, D], pl.FP32],
-    attention_pre_mix: pl.Tensor[[T_DYN, HC_MULT], pl.FP32],
-    output_window: pld.DistributedTensor[[DECODE_MAX_TOKENS, D], pl.FP32],
-    output_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
-    rank: pl.Scalar[pl.INT32],
-    num_tokens: pl.Scalar[pl.INT32],
-    attention_epoch: pl.Scalar[pl.INT32],
-):
-    """Run one SWA attention sublayer and emit the staggered mix for the next sublayer."""
-    tokens = pl.tensor.dim(x_hc, 0)
-    attention_input = pl.create_tensor([tokens, D], dtype=pl.BF16)
-    normalized_attention = pl.create_tensor([tokens, D], dtype=pl.BF16)
-    post_mix, residual_mix = attention_pre(
-        x_hc,
-        incoming_pre_mix,
-        hc_attn_fn,
-        hc_attn_scale,
-        hc_attn_base,
-        attn_norm_weight,
-        attention_input,
-        normalized_attention,
-        attention_pre_mix,
-        num_tokens,
-    )
-    group_base = rank // TP_SIZE * TP_SIZE
-    tp_rank = rank % TP_SIZE
-    decode_attn_swa(
-        normalized_attention,
-        wq_a,
-        wq_a_scale,
-        q_norm_weight,
-        wq_b,
-        wq_b_scale,
-        wkv,
-        wkv_scale,
-        kv_norm_weight,
-        attn_sink,
-        wo_a,
-        wo_b,
-        wo_b_scale,
-        rope_cos,
-        rope_sin,
-        window_slots,
-        window_indices,
-        window_cache,
-        window_cache_scale,
-        output_window,
-        output_arrived,
-        attention_output,
-        group_base,
-        tp_rank,
-        num_tokens,
-        attention_epoch,
-    )
-    mhc_post(attention_output, x_hc, post_mix, residual_mix, attention_hidden)
-    return attention_hidden, attention_pre_mix
+def make_decode_swa(attention_fn=decode_attn_swa, scale_dtype=pl.BF16):
+    """Bind one cache scale ABI before compiling the HC composition."""
+    @pl.jit.inline(auto_scope=False)
+    def decode_swa(
+        x_hc: pl.Tensor[[T_DYN, HC_MULT, D], pl.FP32],
+        incoming_pre_mix: pl.Tensor[[T_DYN, HC_MULT], pl.FP32],
+        hc_attn_fn: pl.Tensor[[MIX_HC, HC_DIM], pl.FP32],
+        hc_attn_scale: pl.Tensor[[3], pl.FP32],
+        hc_attn_base: pl.Tensor[[MIX_HC], pl.FP32],
+        attn_norm_weight: pl.Tensor[[D], pl.BF16],
+        wq_a: pl.Tensor[[D, Q_LORA], pl.FP8E4M3FN],
+        wq_a_scale: pl.Tensor[[D // MX_GROUP, Q_LORA], pl.FP8E8M0, pl.MX_B_NN],
+        q_norm_weight: pl.Tensor[[Q_LORA], pl.BF16],
+        wq_b: pl.Tensor[[Q_LORA, LOCAL_H * HEAD_DIM], pl.FP8E4M3FN],
+        wq_b_scale: pl.Tensor[[Q_LORA // MX_GROUP, LOCAL_H * HEAD_DIM], pl.FP8E8M0, pl.MX_B_NN],
+        wkv: pl.Tensor[[D, HEAD_DIM], pl.FP8E4M3FN],
+        wkv_scale: pl.Tensor[[D // MX_GROUP, HEAD_DIM], pl.FP8E8M0, pl.MX_B_NN],
+        kv_norm_weight: pl.Tensor[[HEAD_DIM], pl.BF16],
+        attn_sink: pl.Tensor[[LOCAL_H], pl.FP32],
+        wo_a: pl.Tensor[[LOCAL_O_GROUPS, O_LORA, O_GROUP_IN], pl.BF16],
+        wo_b: pl.Tensor[[LOCAL_O_WIDTH, D], pl.FP8E4M3FN],
+        wo_b_scale: pl.Tensor[[LOCAL_O_WIDTH // MX_GROUP, D], pl.FP8E8M0, pl.MX_B_NN],
+        rope_cos: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
+        rope_sin: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
+        window_slots: pl.Tensor[[T_DYN], pl.INT64],
+        window_indices: pl.Tensor[[T_DYN, 128], pl.INT32],
+        window_cache: pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM], pl.FP8E4M3FN],
+        window_cache_scale: pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM // WINDOW_CACHE_GROUP], scale_dtype],
+        attention_output: pl.Tensor[[T_DYN, D], pl.BF16],
+        attention_hidden: pl.Tensor[[T_DYN, HC_MULT, D], pl.FP32],
+        attention_pre_mix: pl.Tensor[[T_DYN, HC_MULT], pl.FP32],
+        output_window: pld.DistributedTensor[[DECODE_MAX_TOKENS, D], pl.FP32],
+        output_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
+        rank: pl.Scalar[pl.INT32],
+        num_tokens: pl.Scalar[pl.INT32],
+        attention_epoch: pl.Scalar[pl.INT32],
+    ):
+        """Run one SWA attention sublayer and emit the staggered mix for the next sublayer."""
+        tokens = pl.tensor.dim(x_hc, 0)
+        attention_input = pl.create_tensor([tokens, D], dtype=pl.BF16)
+        normalized_attention = pl.create_tensor([tokens, D], dtype=pl.BF16)
+        (post_mix, residual_mix) = attention_pre(
+            x_hc, incoming_pre_mix,
+            hc_attn_fn, hc_attn_scale, hc_attn_base,
+            attn_norm_weight,
+            attention_input, normalized_attention, attention_pre_mix,
+            num_tokens,
+        )
+        group_base = rank // TP_SIZE * TP_SIZE
+        tp_rank = rank % TP_SIZE
+        attention_fn(
+            normalized_attention,
+            wq_a, wq_a_scale, q_norm_weight, wq_b, wq_b_scale,
+            wkv, wkv_scale, kv_norm_weight, attn_sink,
+            wo_a, wo_b, wo_b_scale,
+            rope_cos, rope_sin,
+            window_slots, window_indices, window_cache, window_cache_scale,
+            output_window, output_arrived, attention_output,
+            group_base, tp_rank, num_tokens, attention_epoch,
+        )
+        mhc_post(attention_output, x_hc, post_mix, residual_mix, attention_hidden)
+        return attention_hidden, attention_pre_mix
+
+    return decode_swa
 
 
-@pl.jit.inline(auto_scope=False)
-def decode_swa_sharded(
-    x_hc: pl.Tensor[[LOCAL_T_DYN, HC_MULT, D], pl.FP32],
-    incoming_pre_mix: pl.Tensor[[LOCAL_T_DYN, HC_MULT], pl.FP32],
-    hc_attn_fn: pl.Tensor[[MIX_HC, HC_DIM], pl.FP32],
-    hc_attn_scale: pl.Tensor[[3], pl.FP32],
-    hc_attn_base: pl.Tensor[[MIX_HC], pl.FP32],
-    attn_norm_weight: pl.Tensor[[D], pl.BF16],
-    wq_a: pl.Tensor[[D, Q_LORA], pl.FP8E4M3FN],
-    wq_a_scale: pl.Tensor[[D // MX_GROUP, Q_LORA], pl.FP8E8M0, pl.MX_B_NN],
-    q_norm_weight: pl.Tensor[[Q_LORA], pl.BF16],
-    wq_b: pl.Tensor[[Q_LORA, LOCAL_H * HEAD_DIM], pl.FP8E4M3FN],
-    wq_b_scale: pl.Tensor[[Q_LORA // MX_GROUP, LOCAL_H * HEAD_DIM], pl.FP8E8M0, pl.MX_B_NN],
-    wkv: pl.Tensor[[D, HEAD_DIM], pl.FP8E4M3FN],
-    wkv_scale: pl.Tensor[[D // MX_GROUP, HEAD_DIM], pl.FP8E8M0, pl.MX_B_NN],
-    kv_norm_weight: pl.Tensor[[HEAD_DIM], pl.BF16],
-    attn_sink: pl.Tensor[[LOCAL_H], pl.FP32],
-    wo_a: pl.Tensor[[LOCAL_O_GROUPS, O_LORA, O_GROUP_IN], pl.BF16],
-    wo_b: pl.Tensor[[LOCAL_O_WIDTH, D], pl.FP8E4M3FN],
-    wo_b_scale: pl.Tensor[[LOCAL_O_WIDTH // MX_GROUP, D], pl.FP8E8M0, pl.MX_B_NN],
-    rope_cos: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
-    rope_sin: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
-    window_slots: pl.Tensor[[T_DYN], pl.INT64],
-    window_indices: pl.Tensor[[T_DYN, 128], pl.INT32],
-    window_cache: pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM], pl.FP8E4M3FN],
-    window_cache_scale: pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM // WINDOW_CACHE_GROUP], pl.FP8E8M0],
-    attention_output: pl.Tensor[[LOCAL_T_DYN, D], pl.BF16],
-    attention_hidden: pl.Tensor[[LOCAL_T_DYN, HC_MULT, D], pl.FP32],
-    attention_pre_mix: pl.Tensor[[LOCAL_T_DYN, HC_MULT], pl.FP32],
-    gathered: pl.Tensor[[T_DYN, D], pl.BF16],
-    input_window: pld.DistributedTensor[[DECODE_INPUT_MAX_TOKENS, D], pl.BF16],
-    input_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
-    output_window: pld.DistributedTensor[[DECODE_MAX_TOKENS, D], pl.FP32],
-    output_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
-    rank: pl.Scalar[pl.INT32],
-    num_tokens: pl.Scalar[pl.INT32],
-    attention_epoch: pl.Scalar[pl.INT32],
-):
-    """Run one SWA attention sublayer and emit the staggered mix for the next sublayer."""
-    tokens = pl.tensor.dim(x_hc, 0)
-    group_base = rank // TP_SIZE * TP_SIZE
-    tp_rank = rank % TP_SIZE
-    # Sequence parallel: the residual stream stays local, only the normalized
-    # Attention input crosses the TP group ([T_local, D] -> [T, D]).
-    _, local_count = slab_owner(tp_rank, tokens, num_tokens)
-    attention_input = pl.create_tensor([tokens, D], dtype=pl.BF16)
-    normalized_attention = pl.create_tensor([tokens, D], dtype=pl.BF16)
-    post_mix, residual_mix = attention_pre(
-        x_hc,
-        incoming_pre_mix,
-        hc_attn_fn,
-        hc_attn_scale,
-        hc_attn_base,
-        attn_norm_weight,
-        attention_input,
-        normalized_attention,
-        attention_pre_mix,
-        local_count,
-    )
-    gathered = decode_tp_input_all_gather(
-        normalized_attention, input_window, input_arrived, gathered, group_base, tp_rank,
-        num_tokens, attention_epoch,
-    )
-    decode_attn_swa_sharded(
-        gathered,
-        wq_a,
-        wq_a_scale,
-        q_norm_weight,
-        wq_b,
-        wq_b_scale,
-        wkv,
-        wkv_scale,
-        kv_norm_weight,
-        attn_sink,
-        wo_a,
-        wo_b,
-        wo_b_scale,
-        rope_cos,
-        rope_sin,
-        window_slots,
-        window_indices,
-        window_cache,
-        window_cache_scale,
-        output_window,
-        output_arrived,
-        attention_output,
-        group_base,
-        tp_rank,
-        num_tokens,
-        attention_epoch,
-    )
-    mhc_post(attention_output, x_hc, post_mix, residual_mix, attention_hidden)
-    return attention_hidden, attention_pre_mix
+decode_swa = make_decode_swa()
+decode_swa_e8m0 = make_decode_swa(decode_attn_swa_e8m0, pl.FP8E8M0)
+
+
+
+def make_decode_swa_sharded(attention_fn=decode_attn_swa_sharded, scale_dtype=pl.BF16):
+    """Bind one cache scale ABI before compiling the HC composition."""
+    @pl.jit.inline(auto_scope=False)
+    def decode_swa_sharded(
+        x_hc: pl.Tensor[[LOCAL_T_DYN, HC_MULT, D], pl.FP32],
+        incoming_pre_mix: pl.Tensor[[LOCAL_T_DYN, HC_MULT], pl.FP32],
+        hc_attn_fn: pl.Tensor[[MIX_HC, HC_DIM], pl.FP32],
+        hc_attn_scale: pl.Tensor[[3], pl.FP32],
+        hc_attn_base: pl.Tensor[[MIX_HC], pl.FP32],
+        attn_norm_weight: pl.Tensor[[D], pl.BF16],
+        wq_a: pl.Tensor[[D, Q_LORA], pl.FP8E4M3FN],
+        wq_a_scale: pl.Tensor[[D // MX_GROUP, Q_LORA], pl.FP8E8M0, pl.MX_B_NN],
+        q_norm_weight: pl.Tensor[[Q_LORA], pl.BF16],
+        wq_b: pl.Tensor[[Q_LORA, LOCAL_H * HEAD_DIM], pl.FP8E4M3FN],
+        wq_b_scale: pl.Tensor[[Q_LORA // MX_GROUP, LOCAL_H * HEAD_DIM], pl.FP8E8M0, pl.MX_B_NN],
+        wkv: pl.Tensor[[D, HEAD_DIM], pl.FP8E4M3FN],
+        wkv_scale: pl.Tensor[[D // MX_GROUP, HEAD_DIM], pl.FP8E8M0, pl.MX_B_NN],
+        kv_norm_weight: pl.Tensor[[HEAD_DIM], pl.BF16],
+        attn_sink: pl.Tensor[[LOCAL_H], pl.FP32],
+        wo_a: pl.Tensor[[LOCAL_O_GROUPS, O_LORA, O_GROUP_IN], pl.BF16],
+        wo_b: pl.Tensor[[LOCAL_O_WIDTH, D], pl.FP8E4M3FN],
+        wo_b_scale: pl.Tensor[[LOCAL_O_WIDTH // MX_GROUP, D], pl.FP8E8M0, pl.MX_B_NN],
+        rope_cos: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
+        rope_sin: pl.Tensor[[T_DYN, ROPE_DIM // 2], pl.FP32],
+        window_slots: pl.Tensor[[T_DYN], pl.INT64],
+        window_indices: pl.Tensor[[T_DYN, 128], pl.INT32],
+        window_cache: pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM], pl.FP8E4M3FN],
+        window_cache_scale: pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM // WINDOW_CACHE_GROUP], scale_dtype],
+        attention_output: pl.Tensor[[LOCAL_T_DYN, D], pl.BF16],
+        attention_hidden: pl.Tensor[[LOCAL_T_DYN, HC_MULT, D], pl.FP32],
+        attention_pre_mix: pl.Tensor[[LOCAL_T_DYN, HC_MULT], pl.FP32],
+        gathered: pl.Tensor[[T_DYN, D], pl.BF16],
+        input_window: pld.DistributedTensor[[DECODE_INPUT_MAX_TOKENS, D], pl.BF16],
+        input_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
+        output_window: pld.DistributedTensor[[DECODE_MAX_TOKENS, D], pl.FP32],
+        output_arrived: pld.DistributedTensor[[TP_SIZE, 1], pl.INT32],
+        rank: pl.Scalar[pl.INT32],
+        num_tokens: pl.Scalar[pl.INT32],
+        attention_epoch: pl.Scalar[pl.INT32],
+    ):
+        """Run one SWA attention sublayer and emit the staggered mix for the next sublayer."""
+        tokens = pl.tensor.dim(x_hc, 0)
+        group_base = rank // TP_SIZE * TP_SIZE
+        tp_rank = rank % TP_SIZE
+        # Sequence parallel: the residual stream stays local, only the normalized
+        # Attention input crosses the TP group ([T_local, D] -> [T, D]).
+        _, local_count = slab_owner(tp_rank, tokens, num_tokens)
+        attention_input = pl.create_tensor([tokens, D], dtype=pl.BF16)
+        normalized_attention = pl.create_tensor([tokens, D], dtype=pl.BF16)
+        (post_mix, residual_mix) = attention_pre(
+            x_hc, incoming_pre_mix,
+            hc_attn_fn, hc_attn_scale, hc_attn_base,
+            attn_norm_weight,
+            attention_input, normalized_attention, attention_pre_mix,
+            local_count,
+        )
+        gathered = decode_tp_input_all_gather(
+            normalized_attention, input_window, input_arrived, gathered, group_base, tp_rank, num_tokens, attention_epoch,
+        )
+        attention_fn(
+            gathered,
+            wq_a, wq_a_scale, q_norm_weight, wq_b, wq_b_scale,
+            wkv, wkv_scale, kv_norm_weight, attn_sink,
+            wo_a, wo_b, wo_b_scale,
+            rope_cos, rope_sin,
+            window_slots, window_indices, window_cache, window_cache_scale,
+            output_window, output_arrived, attention_output,
+            group_base, tp_rank, num_tokens, attention_epoch,
+        )
+        mhc_post(attention_output, x_hc, post_mix, residual_mix, attention_hidden)
+        return attention_hidden, attention_pre_mix
+
+    return decode_swa_sharded
+
+
+decode_swa_sharded = make_decode_swa_sharded()
+decode_swa_sharded_e8m0 = make_decode_swa_sharded(decode_attn_swa_sharded_e8m0, pl.FP8E8M0)
+
 
 
 @pl.jit
@@ -286,7 +258,7 @@ def decode_swa_rank(
     window_indices: pl.Tensor[[T_DYN, 128], pl.INT32],
     window_cache: pl.InOut[pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM], pl.FP8E4M3FN]],
     window_cache_scale: pl.InOut[
-        pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM // WINDOW_CACHE_GROUP], pl.FP8E8M0]
+        pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM // WINDOW_CACHE_GROUP], pl.BF16]
     ],
     attention_output: pl.InOut[pl.Tensor[[T_DYN, D], pl.BF16]],
     attention_hidden: pl.Out[pl.Tensor[[T_DYN, HC_MULT, D], pl.FP32]],
@@ -360,7 +332,7 @@ def decode_swa_rank_sharded(
     window_indices: pl.Tensor[[T_DYN, 128], pl.INT32],
     window_cache: pl.InOut[pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM], pl.FP8E4M3FN]],
     window_cache_scale: pl.InOut[
-        pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM // WINDOW_CACHE_GROUP], pl.FP8E8M0]
+        pl.Tensor[[ORI_BLOCKS_DYN, 128, 1, HEAD_DIM // WINDOW_CACHE_GROUP], pl.BF16]
     ],
     attention_output: pl.InOut[pl.Tensor[[LOCAL_T_DYN, D], pl.BF16]],
     attention_hidden: pl.Out[pl.Tensor[[LOCAL_T_DYN, HC_MULT, D], pl.FP32]],
@@ -625,14 +597,13 @@ def _make_program_sharded(world_size, epochs, specs):
 
 def build_specs(args, initial_state=None):
     del initial_state
-    return _decode_utils.assemble_specs(args, swa.build_specs(args, "decode"), ATTENTION_SPEC_NAMES)
+    return _decode_utils.assemble_specs(args, _decode_utils.build_swa_specs(args, "decode"), ATTENTION_SPEC_NAMES)
 
 
 def build_specs_sharded(args):
     """Specs with per-rank token slabs plus the Attention-input gather scratch."""
-    return _decode_utils.assemble_specs(
-        args, swa.build_specs(args, "decode"), SHARDED_ATTENTION_SPEC_NAMES, sharded=True
-    )
+    value_build_swa_specs = _decode_utils.build_swa_specs(args, 'decode')
+    return _decode_utils.assemble_specs(args, value_build_swa_specs, SHARDED_ATTENTION_SPEC_NAMES, sharded=True)
 
 
 def make_golden(epochs):
@@ -640,7 +611,7 @@ def make_golden(epochs):
         for _ in range(epochs):
             normalized, post, residual = _decode_hc_pre.golden_attention_pre(tensors)
             leaf = dict(tensors, x=normalized, output=tensors["attention_output"])
-            swa.golden_swa(leaf)
+            _decode_utils.golden_swa_leaf(leaf)
             _decode_hc_post.golden_attention_post(tensors, post, residual)
 
     return golden_half
@@ -651,7 +622,7 @@ def make_golden_sharded(epochs):
         for _ in range(epochs):
             gathered, post, residual = _decode_hc_pre.golden_attention_pre_sharded(tensors)
             leaf = dict(tensors, x=gathered, output=tensors["attention_output"])
-            swa.golden_swa(leaf, sharded=True)
+            _decode_utils.golden_swa_leaf(leaf, sharded=True)
             _decode_hc_post.golden_attention_post(tensors, post, residual)
 
     return golden_half
@@ -659,30 +630,28 @@ def make_golden_sharded(epochs):
 
 def comparisons(initial_state=None):
     del initial_state
-    compare = _decode_utils.make_boundary_comparisons(swa.compare_output)
+    compare = _decode_utils.make_boundary_comparisons(_decode_utils.compare_swa_output)
     compare.update(
         {
-            "attention_output": swa.compare_reduced,
-            "window_cache": swa.compare_distributed_cache,
-            "window_cache_scale": swa.compare_scales,
-        }
+            'attention_output': _decode_utils.compare_swa_reduced,
+            'window_cache': _decode_utils.compare_swa_distributed_cache,
+            'window_cache_scale': _decode_utils.compare_swa_scales,
+        },
     )
     return compare
 
 
 def comparisons_sharded(initial_state=None):
     del initial_state
-    compare = _decode_utils.make_boundary_comparisons(swa.compare_output, sharded=True)
+    compare = _decode_utils.make_boundary_comparisons(_decode_utils.compare_swa_output, sharded=True)
+    value_make_compare_sharded_rows = _decode_utils.make_compare_sharded_rows(_decode_utils.compare_swa_output)
     compare.update(
         {
-            # The ReduceScatter publishes a fully materialized slab: the rows this
-            # rank does not own are zeros, and the check asserts that instead of
-            # letting stale values sit next to the owned rows.
-            "attention_output": _decode_utils.make_compare_sharded_rows(swa.compare_output),
-            "gathered": _decode_utils.compare_attention_gather,
-            "window_cache": swa.compare_distributed_cache,
-            "window_cache_scale": swa.compare_scales,
-        }
+            'attention_output': value_make_compare_sharded_rows,
+            'gathered': _decode_utils.compare_attention_gather,
+            'window_cache': _decode_utils.compare_swa_distributed_cache,
+            'window_cache_scale': _decode_utils.compare_swa_scales,
+        },
     )
     return compare
 

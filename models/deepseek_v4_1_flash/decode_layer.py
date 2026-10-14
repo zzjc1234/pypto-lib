@@ -70,7 +70,7 @@ from decode_c1a_reindex import decode_c1a_reindex_sharded
 from decode_c1a_reuse import decode_c1a_reuse_sharded
 from decode_c2a_full import decode_c2a_full_sharded
 from decode_c2a_reuse import decode_c2a_reuse_sharded
-from decode_swa import decode_swa_sharded
+from decode_swa import decode_swa_sharded_e8m0 as decode_swa_sharded
 from gate import golden_gate_reference as gate
 from rmsnorm import golden_rms_norm
 from hc_mixes import golden_mhc_mixes
@@ -92,6 +92,7 @@ from moe import (
     moe,
 )
 from quant import (
+    encode_e8m0,
     dequantize_mxfp4,
     dequantize_mxfp8,
     unpack_mx_b_scale,
@@ -874,6 +875,7 @@ def _torch_dtype(dtype):
         pl.FP32: torch.float32,
         pl.FP8E4M3FN: torch.float8_e4m3fn,
         pl.FP8E8M0: torch.float8_e8m0fnu,
+        pl.INT16: torch.int16,
         pl.INT32: torch.int32,
         pl.INT64: torch.int64,
         pl.UINT8: torch.uint8,
@@ -926,6 +928,19 @@ def build_tensor_specs(layer_id=0, seed=0):
         case="mixed",
     )
     attention_specs = decode_swa.build_specs_sharded(args)
+    # The runtime layer dispatcher shares an E8M0 cache ABI with C2A/C1A.
+    legacy_specs = []
+    for spec in attention_specs:
+        if isinstance(spec, TensorSpec) and spec.name == "window_cache_scale":
+            initializer = spec.init_value
+
+            def initialize_legacy_scale(initializer=initializer):
+                value = initializer() if callable(initializer) else initializer
+                return encode_e8m0(value.float()).view(torch.float8_e8m0fnu)
+
+            spec = replace(spec, dtype=torch.float8_e8m0fnu, init_value=initialize_legacy_scale)
+        legacy_specs.append(spec)
+    attention_specs = legacy_specs
     by_name = {}
     groups = EP_SIZE // TP_SIZE
     attention_outputs = {

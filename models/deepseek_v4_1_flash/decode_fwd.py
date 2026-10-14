@@ -50,7 +50,7 @@ from decode_c1a_reindex import decode_c1a_reindex_sharded
 from decode_c1a_reuse import decode_c1a_reuse_sharded
 from decode_c2a_full import decode_c2a_full_sharded
 from decode_c2a_reuse import decode_c2a_reuse_sharded
-from decode_swa import decode_swa_sharded
+from decode_swa import decode_swa_sharded_e8m0 as decode_swa_sharded
 from expert_routed import (
     MX_PACKED_LANE_COLS,
     MX_W1_PACKED_ROWS,
