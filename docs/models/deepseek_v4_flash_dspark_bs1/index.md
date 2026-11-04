@@ -5,10 +5,9 @@ It complements the [low-latency target model](../deepseek_v4_flash_lowlat/index.
 and the [wide-batch DSpark model](../deepseek_v4_flash_dspark/index.md).
 
 The source includes the batch-one drafter, Markov sampling, six-row target,
-device request-state transitions, and the two-frame host policy. Source generation
-is available; native compilation, the portable checkpoint/input loader and the
-complete request benchmark are still being integrated. This directory is not yet
-a runnable TPOT reproduction entry. No historical TPOT is claimed for this revision.
+device request-state transitions, two-frame host policy, native build and
+checkpoint-backed request benchmark. Clean-checkout execution and performance
+qualification are still pending. No historical TPOT is claimed for this revision.
 
 This reproduction snapshot retains the measured target arithmetic rather than
 silently substituting later FP32-reference refinements. It retains rank-ordered
@@ -100,6 +99,82 @@ source is retained in the artifact report. The native-source digest is a JIT
 constexpr key input, so changing it cannot silently reuse the other implementation.
 Normal native compilation is still required. A changed generated implementation
 is rejected rather than receiving an unrelated expert binary.
+
+## Native compilation and prepared data
+
+Compile each generated profile without a Worker or device allocation:
+
+```bash
+python -m tools.dspark_bs1.native_package \
+  --generated-report build_output/dspark-bs1-rsag-generated.json \
+  --output build_output/dspark-bs1-rsag-native --jobs 32
+```
+
+Repeat for `single`, `one` and `two`. The explicit native package includes its
+source and file inventory; it does not impersonate a persistent JIT READY entry.
+The adapter currently uses the PyPTO prebuilt/assembly APIs and must be used with
+the compatible installed PyPTO/simpler toolchain. Request execution loads actual
+native bytes read-only and preserves normal Worker provenance validation.
+
+`tools.dspark_bs1.prepare_inputs` imports the real ND target and four-rank D/M
+raw-shard manifests. It reuses weight files in place, constructs only address,
+slot and RoPE metadata, and initializes fresh target/D KV state. Its manifest
+records the actual file paths, dtype/shape, source manifests and stat evidence.
+It does not create model activations or continuation-token references.
+
+The prepared tensor schema is explicit: `shape` contains the rank axis, `dtype`
+is the actual ABI dtype, and `shards` supplies one raw or weights-only Torch
+payload per rank. Raw offsets are in elements. NZ data must already have its
+declared native storage order. This importer is for the existing prepared
+checkpoint format; it does not claim arbitrary Hugging Face checkpoint conversion.
+
+The request JSON contains eight distinct records with `dataset`, `question_id`,
+`prompt_ids`, `prompt_tokens`, and untruncated first-turn provenance. Every request
+runs to its actual tokenizer EOS or 2048 generated tokens. Checkpoint weights and
+tokenized benchmark data are external inputs and are not committed as binaries.
+
+## Complete-request benchmark
+
+Run CPU admission before acquiring any device. Supply all four package paths:
+
+```bash
+python -m tools.dspark_bs1.benchmark --prepare \
+  --package single=build_output/dspark-bs1-single-native \
+  --package one=build_output/dspark-bs1-one-native \
+  --package two=build_output/dspark-bs1-two-native \
+  --package rsag=build_output/dspark-bs1-rsag-native \
+  --tensor-manifest prepared/tensor-manifest.json \
+  --output build_output/dspark-bs1-cpu
+```
+
+The `--run` command takes the same inputs plus `--cpu-ready`, `--lease-file`,
+`--execution-lock`, and a fresh output directory. Run it through
+`tools.dspark_bs1.owned` so its process marker predates all child creation.
+Ownership covers the exact host, boot, PID/starttime and token. Resource waiting
+allocates no HBM; real allocations begin only after the experiment is ready.
+
+The tested 910C placement uses four complete physical boards with both chips,
+eight logical ranks and symmetric SIO pairs verified from actual HAL/SMI/topology.
+It does not substitute eight boards with one chip each. Capacity retains the
+runtime and two-GiB margins before initialization and actual-free checks afterward.
+The original two-frame depth-two/launch-depth-one adapter is scoped to construction.
+Optional `--early-aic-control-map` and `--omit-optional-warmup` initialization
+adapters are explicit and recorded; they do not change model math or enable SDMA
+without its real workspace/runtime support.
+
+The benchmark retains five warm parents, four serialized fixed captures, and
+eight request triplets (`K0`, baseline streaming, ordered-RSAG streaming).
+Every backend starts from the same request's live model-produced prefix.
+The decoder clock includes native history seeding, state upload, packet delivery
+and accepted-successor drain. Prefix execution, initialization, weight upload and
+warmup are recorded separately. The prefill prediction is counted once in total
+generation and excluded from the decode denominator.
+
+Outputs include full token IDs and per-request JSON/CSV with prompt/decode counts,
+TTFT scope, decode wall, TPOT, EOS/length reason and failures. Request-median TPOT
+and token-weighted TPOT are distinct statistics. No stable P95 is inferred from
+eight requests. Numerical failures remain visible and do not become qualified
+speed claims; final Torch reconciliation remains a separate stage.
 
 ## Reproduction and numerical status
 
