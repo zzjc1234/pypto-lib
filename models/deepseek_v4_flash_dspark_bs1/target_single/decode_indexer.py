@@ -91,6 +91,9 @@ IDX_N_RANKS = 8
 
 TOKEN_SHARDED = T == IDX_N_RANKS
 
+if T not in (1, IDX_N_RANKS):
+    raise ValueError("Indexer head fallback currently supports S1 only; S2..S7 need batched query scratch")
+
 Q_TILE = 256
 
 Q_OUT_TILE = 1024

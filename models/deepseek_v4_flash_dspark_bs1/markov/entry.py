@@ -43,6 +43,8 @@ HIDDEN_TILE = 512
 
 RMS_M_TILE = 8
 
+LM_M_TILE = 16
+
 LM_N_TILE = 128
 
 LM_K_TILE = 256
@@ -78,6 +80,9 @@ assert VOCAB % GREEDY_VOCAB_CHUNK == 0
 assert GREEDY_NUM_CHUNKS <= GREEDY_CHUNK_PAD
 
 assert CONFIDENCE_PAD * 4 == 32
+
+for _batch in DSPARK_SUPPORTED_BATCHES:
+    assert (_batch * DSPARK_QUERY_PAD) % LM_M_TILE == 0
 
 @pl.jit.inline
 def normalize_head_hidden(

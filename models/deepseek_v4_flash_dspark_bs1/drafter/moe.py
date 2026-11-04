@@ -7,9 +7,15 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
 
+import dataclasses
+
 import sys
 
+from . import config
+
 _EP_DEFAULT = 2
+
+_CHECKPOINT_N_ROUTED_EXPERTS = config.FLASH.n_routed_experts
 
 def _parse_int_argv(name, default):
     for i, tok in enumerate(sys.argv):
@@ -20,6 +26,19 @@ def _parse_int_argv(name, default):
     return default
 
 EP = _parse_int_argv("--ep", _EP_DEFAULT)
+
+_EXPERTS_PER_RANK_DEFAULT = min(_CHECKPOINT_N_ROUTED_EXPERTS // 8, _CHECKPOINT_N_ROUTED_EXPERTS // EP)
+
+EXPERTS_PER_RANK = _parse_int_argv("--experts-per-rank", _EXPERTS_PER_RANK_DEFAULT)
+
+if EXPERTS_PER_RANK <= 0:
+    raise ValueError(f"--experts-per-rank must be a positive integer (got {EXPERTS_PER_RANK})")
+
+config.FLASH = dataclasses.replace(config.FLASH, n_routed_experts=EXPERTS_PER_RANK * EP)
+
+config.EP = EP
+
+config.RECV_MAX = EP * config.MOE_TOKENS
 
 import pypto.language as pl
 

@@ -9,6 +9,8 @@
 
 import sys
 
+_TP_CHOICES = (1, 2, 4)
+
 _TP_DEFAULT = 2
 
 def _parse_int_argv(flag: str, default: int) -> int:
@@ -20,6 +22,9 @@ def _parse_int_argv(flag: str, default: int) -> int:
     return default
 
 TP_SIZE = _parse_int_argv("--tp", _TP_DEFAULT)
+
+if TP_SIZE not in _TP_CHOICES:
+    raise ValueError(f"--tp must be one of {_TP_CHOICES} (got {TP_SIZE})")
 
 import pypto.language as pl
 

@@ -11,6 +11,10 @@ from math import gcd
 
 import sys
 
+from . import config
+
+_TP_CHOICES = (1, 2, 4)
+
 _TP_DEFAULT = 2
 
 def _parse_tp_argv():
@@ -22,6 +26,11 @@ def _parse_tp_argv():
     return _TP_DEFAULT
 
 TP_SIZE = _parse_tp_argv()
+
+if TP_SIZE not in _TP_CHOICES:
+    raise ValueError(f"--tp must be one of {_TP_CHOICES} (got {TP_SIZE})")
+
+config.TP = TP_SIZE
 
 import pypto.language as pl
 
@@ -69,6 +78,8 @@ O_RS_D_TILE = gcd(4096, D)
 
 LOCAL_T_PAD = (LOCAL_T + TOKEN_TILE - 1) // TOKEN_TILE * TOKEN_TILE
 
+T_PAD = LOCAL_T_PAD
+
 GROUP_T_PAD = TP_SIZE * LOCAL_T_PAD
 
 ATTENTION_WINDOW_ROWS = LOCAL_O_GROUPS * GROUP_T_PAD
@@ -81,6 +92,8 @@ def _token_tile(capacity, ceiling):
         if capacity % tile == 0:
             return tile
     return TOKEN_TILE
+
+PROJ_B_MM_T_TILE = _token_tile(T_PAD, 128)
 
 O_A_T_TILE = 128
 
@@ -103,6 +116,47 @@ O_B_D_TILE = 512
 ACT_T_TILE = 16
 
 ACT_N_TILE = 512
+
+if DECODE_TOKENS % TP_SIZE != 0:
+    raise ValueError(f"decode tokens {DECODE_TOKENS} must be divisible by TP size {TP_SIZE}")
+
+if O_GROUPS % TP_SIZE != 0:
+    raise ValueError(f"output groups {O_GROUPS} must be divisible by TP size {TP_SIZE}")
+
+if O_GROUP_IN % O_A_K_TILE != 0:
+    raise ValueError(f"O-A input {O_GROUP_IN} must be divisible by K tile {O_A_K_TILE}")
+
+if O_LORA % O_A_N_TILE != 0:
+    raise ValueError(f"O-A output {O_LORA} must be divisible by N tile {O_A_N_TILE}")
+
+if O_LORA % O_B_K_TILE != 0:
+    raise ValueError(f"O-B group width {O_LORA} must be divisible by K tile {O_B_K_TILE}")
+
+if D % O_B_D_TILE != 0 or O_B_D_TILE % O_B_N_TILE != 0:
+    raise ValueError("O-B output tiles must divide the hidden dimension")
+
+if D % ACT_N_TILE != 0:
+    raise ValueError(f"O-B activation tile {ACT_N_TILE} must divide hidden size {D}")
+
+if D % O_RS_D_TILE != 0:
+    raise ValueError(f"O-B ReduceScatter tile {O_RS_D_TILE} must divide hidden size {D}")
+
+if O_RS_REDUCE_WORKERS % TP_SIZE != 0:
+    raise ValueError(f"TP size {TP_SIZE} must divide O-B ReduceScatter workers {O_RS_REDUCE_WORKERS}")
+
+if O_RS_PUBLISH_WORKERS % TP_SIZE != 0:
+    raise ValueError(f"TP size {TP_SIZE} must divide O-B publish workers {O_RS_PUBLISH_WORKERS}")
+
+if LOCAL_T_PAD % O_B_T_TILE != 0:
+    raise ValueError(f"O-B token tile {O_B_T_TILE} must divide local token capacity {LOCAL_T_PAD}")
+
+if GROUP_T_PAD % O_B_T_TILE != 0:
+    raise ValueError(f"O-B token tile {O_B_T_TILE} must divide token capacity {GROUP_T_PAD}")
+
+if T_PAD % PROJ_B_MM_T_TILE != 0:
+    raise ValueError(
+        f"proj_b_mm token tile {PROJ_B_MM_T_TILE} must divide token capacity {T_PAD}"
+    )
 
 @pl.jit.incore
 def o_group_a2a_gather(

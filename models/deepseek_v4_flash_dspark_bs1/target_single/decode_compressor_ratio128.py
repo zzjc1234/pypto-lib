@@ -9,7 +9,7 @@
 
 import pypto.language as pl
 
-from .config import FLASH as M, BLOCK_SIZE, C128_COMPRESSOR_BLOCK_SIZE, DECODE_BATCH, DECODE_SEQ, FP32_NEG_INF
+from .config import FLASH as M, BLOCK_SIZE, C128_COMPRESSOR_BLOCK_SIZE, DECODE_BATCH, DECODE_SEQ, FP32_NEG_INF, KV_CMP_MAX_BLOCKS
 
 B_DYN = pl.dynamic("B_DYN")
 
@@ -37,9 +37,13 @@ ROPE_HEAD_DIM = M.qk_rope_head_dim
 
 NOPE_HEAD_DIM = M.nope_head_dim
 
+MAX_SEQ_LEN = M.max_position_embeddings
+
 COMPRESS_RATIO = 128
 
 CMP_STORAGE_BLOCK_SIZE = BLOCK_SIZE // COMPRESS_RATIO
+
+IDX_KV_LEN = MAX_SEQ_LEN // COMPRESS_RATIO
 
 COFF = 1
 
@@ -50,6 +54,11 @@ STATE_LEN = COFF * COMPRESS_RATIO
 COMPRESS_STATE_BLOCK_SIZE = C128_COMPRESSOR_BLOCK_SIZE
 
 COMPRESS_STATE_DIM = 2 * OUT_DIM
+
+CMP_MAX_BLOCKS = KV_CMP_MAX_BLOCKS
+
+if IDX_KV_LEN > CMP_MAX_BLOCKS * CMP_STORAGE_BLOCK_SIZE:
+    raise ValueError("ratio128 compressed KV cache capacity is smaller than max compressed sequence length")
 
 K_TILE = 512
 

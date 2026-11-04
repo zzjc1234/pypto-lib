@@ -7,7 +7,44 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
 
+import sys
+
+from . import config
+
 from .history_gather import history_ring_to_window
+
+_TP_CHOICES = (2, 4)
+
+_EP_CHOICES = (2, 4, 8, 16)
+
+_TP_DEFAULT = 2
+
+_EP_DEFAULT = 2
+
+def _parse_parallel_arg(name: str, default: int) -> tuple[int, bool]:
+    flag = f"--{name}"
+    for index, argument in enumerate(sys.argv):
+        if argument == flag and index + 1 < len(sys.argv):
+            return int(sys.argv[index + 1]), True
+        if argument.startswith(f"{flag}="):
+            return int(argument.split("=", 1)[1]), True
+    return default, False
+
+config.TP, _tp_explicit = _parse_parallel_arg("tp", _TP_DEFAULT)
+
+config.EP, _ep_explicit = _parse_parallel_arg("ep", _EP_DEFAULT)
+
+if config.TP not in _TP_CHOICES:
+    raise ValueError(f"--tp must be one of {_TP_CHOICES} (got {config.TP})")
+
+if config.EP not in _EP_CHOICES:
+    raise ValueError(f"--ep must be one of {_EP_CHOICES} (got {config.EP})")
+
+if not _tp_explicit:
+    sys.argv.extend(("--tp", str(config.TP)))
+
+if not _ep_explicit:
+    sys.argv.extend(("--ep", str(config.EP)))
 
 import pypto.language as pl
 
