@@ -126,7 +126,7 @@ def early_aic_control_mapping(output, *, enabled=False):
             raise RuntimeError(f'ACL device selection failed: {selected}')
         hal = ctypes.CDLL('libascend_hal.so')
         physical = ctypes.c_uint()
-        mapping = hal.halGetPhyDevIdByLogicDevId
+        mapping = hal.drvDeviceGetPhyIdByIndex
         mapping.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_uint)]
         mapping.restype = ctypes.c_int
         mapped = int(mapping(int(device_id), ctypes.byref(physical)))

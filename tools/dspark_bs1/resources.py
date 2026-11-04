@@ -78,8 +78,8 @@ def communication_bytes(packages):
 
 def mapping():
     library = ctypes.CDLL('libascend_hal.so')
-    forward = library.halGetPhyDevIdByLogicDevId
-    reverse = library.halGetLogicDevIdByPhyDevId
+    forward = library.drvDeviceGetPhyIdByIndex
+    reverse = library.drvDeviceGetIndexByPhyId
     for function in [forward, reverse]:
         function.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_uint)]
         function.restype = ctypes.c_int
