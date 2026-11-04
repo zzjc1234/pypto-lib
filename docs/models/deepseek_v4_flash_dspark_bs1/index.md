@@ -4,11 +4,18 @@ This deployment retains five draft tokens and six target verification rows.
 It complements the [low-latency target model](../deepseek_v4_flash_lowlat/index.md)
 and the [wide-batch DSpark model](../deepseek_v4_flash_dspark/index.md).
 
-The initial source consists of the dependency closure of the batch-one drafter,
-Markov sampling, device request-state transitions, and the two-frame host policy.
-The complete target composition, portable checkpoint/input loader and benchmark
-entry are still being integrated. This directory is not yet a runnable serving
-or TPOT reproduction entry. No historical TPOT is claimed for this revision.
+The source includes the batch-one drafter, Markov sampling, six-row target,
+device request-state transitions, and the two-frame host policy. Source generation
+is available; native compilation, the portable checkpoint/input loader and the
+complete request benchmark are still being integrated. This directory is not yet
+a runnable TPOT reproduction entry. No historical TPOT is claimed for this revision.
+
+This reproduction snapshot retains the measured target arithmetic rather than
+silently substituting later FP32-reference refinements. It retains rank-ordered
+output projection, ordered HC-head split reduction, and ascending complete-set
+Indexer selection. It does not establish numerical equivalence with the current
+low-latency target's full Torch reference. Numerical reconciliation follows the
+original-performance reproduction; failures remain visible in either stage.
 
 ## Component boundary
 
@@ -33,6 +40,16 @@ and remaining output budget. Field three stores the last delivered token.
 History has 128 live rows in a 136-row owning allocation. Target features are
 three concatenated 4096-wide HC means from layers 40, 41 and 42, not the final
 learned HC head.
+
+`native_pipeline.native_cycles` composes D/M on ranks 0–3 and target verification
+on all eight ranks. `native_rsag_pipeline` selects the ordered MoE
+reduce-scatter/allgather composition. Its target package shares unchanged kernels
+with the baseline package. The `cycle_count` constexpr selects a one- or two-cycle
+parent in source; it does not require editing generated host code.
+
+The single-query reference uses `target_single`. All three target contexts use
+the same 43 layer-specific weight banks, with independently specialized sequence
+geometry. None of these entries runs with random weights as a request benchmark.
 
 The drafter and Markov packages isolate their import-time deployment arguments
 and restore the caller's arguments in `finally`. Their kernel bodies and active
@@ -59,6 +76,30 @@ prefill prediction. It stops delivery at a real tokenizer EOS. An already
 accepted successor is still waited on, captured and validated, then discarded;
 no replacement is submitted. Exceptions remain the caller's responsibility to
 persist and drain during normal Worker cleanup.
+
+## Source generation
+
+From the repository root, in the configured PyPTO environment:
+
+```bash
+python -m models.deepseek_v4_flash_dspark_bs1.build \
+  --profile rsag --devices 0,1,2,3,4,5,6,7 \
+  --cache build_output/dspark-bs1-cache \
+  --report build_output/dspark-bs1-rsag-generated.json
+```
+
+The other profiles are `single`, `one`, and `two`. This command creates generated
+artifacts only: it does not load weights, construct a Worker, allocate NPU memory,
+or measure performance. The eight device IDs describe logical compile topology;
+runtime board/chip mapping and capacity admission are separate.
+
+The native W2 prefetch implementation is tracked C++ source, not a retained binary.
+`native_source` selects it before artifact publication only after the complete
+generated implementation matches its reviewed fingerprint. Original generated
+source is retained in the artifact report. The native-source digest is a JIT
+constexpr key input, so changing it cannot silently reuse the other implementation.
+Normal native compilation is still required. A changed generated implementation
+is rejected rather than receiving an unrelated expert binary.
 
 ## Reproduction and numerical status
 
