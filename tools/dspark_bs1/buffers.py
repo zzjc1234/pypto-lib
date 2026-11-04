@@ -31,6 +31,7 @@ class BufferPlan:
         self.native_keys = {}
         self.single_keys = {}
         self.broadcast_host_keys = set()
+        self.step_host_keys = set()
         self.frame_keys = [{}, {}]
         for row in self.native_rows:
             name = base_name(row)
@@ -67,6 +68,10 @@ class BufferPlan:
                 # The generated HOST entry passes this entire vector to every
                 # rank. Preserve normal public HOST-to-device input staging.
                 self.broadcast_host_keys.add(key)
+            if name in STEP_FIELDS:
+                if row['direction'] != 'In':
+                    raise ValueError('Single-step metadata must remain INPUT: ' + name)
+                self.step_host_keys.add(key)
             self.single_keys[name] = key
         self.planned_bytes = [0] * 8
         for spec in self.specs.values():
@@ -86,14 +91,14 @@ class BufferPlan:
             raise ValueError('Device allocations require nonempty per-rank shapes')
         # These roots must exist before the Worker forks and remain alive
         # through its entire lifetime, just like the packet HOST frames.
-        self.broadcast_host_inputs = {}
-        for key in self.broadcast_host_keys:
+        self.step_host_inputs = {}
+        for key in self.step_host_keys:
             spec = self.specs[key]
             if 'fill' in spec:
                 host = torch.full(tuple(spec['shape']), spec['fill'], dtype=DTYPES[spec['dtype']])
             else:
                 host = torch.stack([bundle.shard(spec, rank) for rank in range(spec['shape'][0])])
-            self.broadcast_host_inputs[key] = host.contiguous().share_memory_()
+            self.step_host_inputs[key] = host.contiguous().share_memory_()
 
     def verify_files(self):
         """Map actual payload headers before a lease or Worker is constructed."""
@@ -116,15 +121,15 @@ class BufferPlan:
             spec = self.specs[key]
             shape = tuple(spec['shape'])
             dtype = DTYPES[spec['dtype']]
-            if key in self.broadcast_host_keys:
-                roots[key] = self.broadcast_host_inputs[key]
+            if key in self.step_host_keys:
+                roots[key] = self.step_host_inputs[key]
                 continue
             shards = [worker.alloc_tensor(shape[1:], dtype, worker_id=rank)
                       for rank in range(shape[0])]
             roots[key] = StackedDeviceTensor(shards, shape, tuple(range(shape[0])))
         for key in order:
             spec = self.specs[key]
-            if key in self.broadcast_host_keys:
+            if key in self.step_host_keys:
                 continue
             for rank, shard in enumerate(roots[key].shards):
                 upload(worker, shard, self.bundle.shard(spec, rank), rank=rank, fill=spec.get('fill', 0))
@@ -140,9 +145,9 @@ def set_single_step(worker, arguments, position, token):
               'input_ids': token, 'kv_seq_lens': position + 1}
     for name, value in values.items():
         root = arguments[name]
-        for rank, shard in enumerate(root.shards):
-            source = torch.full(shard.shape, value, dtype=shard.dtype)
-            worker.copy_to(shard.data_ptr, source.data_ptr(), source.numel() * source.element_size(), worker_id=rank)
+        if not isinstance(root, torch.Tensor) or not root.is_shared():
+            raise TypeError('Single-step metadata must use its prefork shared HOST input')
+        root.fill_(value)
 
 
 def public_arguments(metadata, named):

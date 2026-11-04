@@ -160,7 +160,7 @@ def main():
                         worker = DistributedWorker(list(programs.values()), config=config, persistent=True,
                                                    reset_persistent_windows=False,
                                                    inherited_host_tensors=[v for frame in host_frames for v in frame.values()]
-                                                       + list(plan.broadcast_host_inputs.values()),
+                                                       + list(plan.step_host_inputs.values()),
                                                    startup_timeout_s=90)
                     report.update(NPU_started=True, status='ALLOCATING_REAL_MODEL_INPUTS',
                                   initialization_seconds=time.monotonic() - started,
