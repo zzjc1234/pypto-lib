@@ -10,6 +10,7 @@ tracked runnable set.
 | [deepseek_v4_flash_mtp](deepseek_v4_flash_mtp/index.md) | DeepSeek V4-Flash at MTP = 1, batch 4 per card: operators, layer and MTP compositions, prefill/decode full forwards | Supported — eight-card accuracy job on relevant PRs |
 | [deepseek_v4_flash_dspark](deepseek_v4_flash_dspark/index.md) | The same V4-Flash checkpoint at batch 64 per card and S = 8 DSpark speculation, with TP-sharded DSA-CP attention; under development | Not supported |
 | [deepseek_v4_flash_lowlat](deepseek_v4_flash_lowlat/index.md) | The V4-Flash decode path at batch 1, S = 8 DSpark speculation, world 8, and default context capacity 1,048,576: head-group and CSA token-sharded attention, tensor-parallel MoE, embedding and LM head; under development, decode only | Not supported |
+| [deepseek_v4_flash_dspark_bs1](deepseek_v4_flash_dspark_bs1/index.md) | Five-draft batch-one drafter/Markov and device request lifecycle; complete target/benchmark integration pending | Not supported |
 | [deepseek_v4_1_flash](deepseek_v4_1_flash/index.md) | DeepSeek V4.1 Flash TP4/DP2/EP8 scaffold with low-bit SWA/C2A/C1A caches, hierarchical indexer, mHC, and MoE | Not supported |
 | [glm5_3_flash](glm5_3_flash/index.md) | GLM-5.3-Flash on a2a3 at TP16/EP16 with W8A8 INT8: the hybrid KDA + NoPE-MLA backbone, the kpool DSA indexer, mHC and MoE. Staging area — configuration, goldens and kernel ABIs only | Not supported |
 
