@@ -21,6 +21,7 @@ from .buffers import CACHES, public_arguments, set_single_step
 from .checks import check_commit_oracle, check_packets
 from .frames import NativeFrames
 from .tensors import read_shard, upload
+from .prepared import SerialSingleEntry
 
 
 def atomic_json(path, value):
@@ -48,10 +49,12 @@ class Requests:
             for name, key in [('oldStreaming', 'two'), ('newStreaming', 'rsag')]
         }
         self.single_arguments = public_arguments(metadata['single'], single)
+        self.single_entry = SerialSingleEntry(worker, programs['single'])
 
     def save(self):
         atomic_json(self.output / 'result.json', dict(requests=self.requests, cases=self.cases,
                     fixed=self.fixed, warmup=self.warmup, epoch=self.epoch,
+                    single_entry_reuse=self.single_entry.report(),
                     protocol=dict(batch_size=1, concurrency=1, drafts=5, max_new_tokens=2048,
                                   temperature=0, prequeue_threshold=24, two_cycle_threshold=7),
                     numerical_qualification=False, performance_reproduction='PENDING_FINAL_CLOSEOUT'))
@@ -78,7 +81,7 @@ class Requests:
 
     def single_step(self, position, token, *, features):
         set_single_step(self.worker, self.single, position, token)
-        self.worker.submit(self.programs['single'], *self.single_arguments, config=self.config).result()
+        self.single_entry.submit_result(self.single_arguments, config=self.config)
         ids = read_shard(self.worker, self.single['sampled_ids'])
         hidden = read_shard(self.worker, self.single['dspark_target_hidden_out']) if features else None
         return int(ids[0, 0]), None if hidden is None else hidden[0].clone()

@@ -183,6 +183,9 @@ def main():
                     if worker is not None:
                         worker.close()
                         report['Worker_closed'] = True
+                    if runner is not None:
+                        runner.single_entry.close()
+                        report['single_entry_reuse'] = runner.single_entry.report()
                     signal.setitimer(signal.ITIMER_REAL, 0)
                     report['owned_children_before_release'] = owned_children()
                     atomic_json(args.output / 'execution.json', report)
