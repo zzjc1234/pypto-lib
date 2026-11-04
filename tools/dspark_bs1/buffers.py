@@ -30,6 +30,7 @@ class BufferPlan:
         self.specs = {}
         self.native_keys = {}
         self.single_keys = {}
+        self.broadcast_host_keys = set()
         self.frame_keys = [{}, {}]
         for row in self.native_rows:
             name = base_name(row)
@@ -59,6 +60,13 @@ class BufferPlan:
                 self.specs[key] = dict(shape=row['shape'], dtype=dtype_name(row['dtype']), fill=fill)
             else:
                 self.specs[key] = bundle.spec(key, row)
+            if len(row['shape']) == 1:
+                if (name != 'num_tokens_per_owner' or row['shape'] != [8]
+                        or row['direction'] != 'In' or dtype_name(row['dtype']) != 'int32'):
+                    raise ValueError('Unsupported unsliced single-program input: ' + name)
+                # The generated HOST entry passes this entire vector to every
+                # rank. Preserve normal public HOST-to-device input staging.
+                self.broadcast_host_keys.add(key)
             self.single_keys[name] = key
         self.planned_bytes = [0] * 8
         for spec in self.specs.values():
@@ -66,6 +74,26 @@ class BufferPlan:
             size = math.prod(spec['shape'][1:]) * torch.empty((), dtype=dtype).element_size()
             for rank in range(spec['shape'][0]):
                 self.planned_bytes[rank] += size
+        for key in self.broadcast_host_keys:
+            spec = self.specs[key]
+            element = torch.empty((), dtype=DTYPES[spec['dtype']]).element_size()
+            # Replace the invalid scalar-shard budget with the full vector's
+            # temporary input storage on each of the eight consumers.
+            for rank in range(8):
+                self.planned_bytes[rank] += (math.prod(spec['shape']) - 1) * element
+        if any(len(spec['shape']) < 2 for key, spec in self.specs.items()
+               if key not in self.broadcast_host_keys):
+            raise ValueError('Device allocations require nonempty per-rank shapes')
+        # These roots must exist before the Worker forks and remain alive
+        # through its entire lifetime, just like the packet HOST frames.
+        self.broadcast_host_inputs = {}
+        for key in self.broadcast_host_keys:
+            spec = self.specs[key]
+            if 'fill' in spec:
+                host = torch.full(tuple(spec['shape']), spec['fill'], dtype=DTYPES[spec['dtype']])
+            else:
+                host = torch.stack([bundle.shard(spec, rank) for rank in range(spec['shape'][0])])
+            self.broadcast_host_inputs[key] = host.contiguous().share_memory_()
 
     def verify_files(self):
         """Map actual payload headers before a lease or Worker is constructed."""
@@ -88,11 +116,16 @@ class BufferPlan:
             spec = self.specs[key]
             shape = tuple(spec['shape'])
             dtype = DTYPES[spec['dtype']]
+            if key in self.broadcast_host_keys:
+                roots[key] = self.broadcast_host_inputs[key]
+                continue
             shards = [worker.alloc_tensor(shape[1:], dtype, worker_id=rank)
                       for rank in range(shape[0])]
             roots[key] = StackedDeviceTensor(shards, shape, tuple(range(shape[0])))
         for key in order:
             spec = self.specs[key]
+            if key in self.broadcast_host_keys:
+                continue
             for rank, shard in enumerate(roots[key].shards):
                 upload(worker, shard, self.bundle.shard(spec, rank), rank=rank, fill=spec.get('fill', 0))
         self.bundle.recheck()
