@@ -32,7 +32,7 @@ def artifact_directory(compiled):
 def source_manifest():
     root = Path(__file__).resolve().parent
     return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(root.rglob('*')) if p.suffix in ('.py', '.cpp')}
+            for p in sorted(root.rglob('*')) if p.suffix in ('.py', '.cpp', '.inc')}
 
 
 def compile_program(profile, *, cache_root, device_ids):
@@ -88,8 +88,11 @@ def compile_program(profile, *, cache_root, device_ids):
         if selection['source_sha256'] != selected_source or len(selection['selected']) != 10:
             raise RuntimeError('Cached program has a different native implementation')
         for item in selection['selected']:
-            if hashlib.sha256((directory / item['source']).read_bytes()).hexdigest() != selected_source:
-                raise RuntimeError('Selected native source does not match the build fingerprint')
+            original = directory / 'report/original-native-source' / item['source']
+            actual = (directory / item['source']).read_text()
+            expected = native_source.replace_cube_source(original.read_text(), selected_source)
+            if actual != expected or hashlib.sha256(actual.encode()).hexdigest() != item['selected_source_sha256']:
+                raise RuntimeError('Selected native source differs from the reviewed graft')
     if before != source_manifest():
         raise RuntimeError('Pipeline sources changed during compilation')
     return compiled, dict(

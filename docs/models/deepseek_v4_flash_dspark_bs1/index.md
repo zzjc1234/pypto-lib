@@ -9,12 +9,12 @@ device request-state transitions, two-frame host policy, native build and
 checkpoint-backed request benchmark. Clean-checkout execution and performance
 qualification are still pending. No historical TPOT is claimed for this revision.
 
-This reproduction snapshot retains the measured target arithmetic rather than
-silently substituting later FP32-reference refinements. It retains rank-ordered
-output projection, ordered HC-head split reduction, and ascending complete-set
-Indexer selection. It does not establish numerical equivalence with the current
-low-latency target's full Torch reference. Numerical reconciliation follows the
-original-performance reproduction; failures remain visible in either stage.
+The target retains rank-ordered output projection, ordered HC-head split
+reduction, and ascending complete-set Indexer selection. Its normalization,
+routing and expert activation use compensated FP32 arithmetic at the existing
+quantization boundaries. Single-query and verification entries share these
+operators. Full request numerical and performance qualification remain separate
+from component validation; failures remain visible in either stage.
 
 ## Component boundary
 
@@ -92,13 +92,14 @@ artifacts only: it does not load weights, construct a Worker, allocate NPU memor
 or measure performance. The eight device IDs describe logical compile topology;
 runtime board/chip mapping and capacity admission are separate.
 
-The native W2 prefetch implementation is tracked C++ source, not a retained binary.
-`native_source` selects it before artifact publication only after the complete
-generated implementation matches its reviewed fingerprint. Original generated
-source is retained in the artifact report. The native-source digest is a JIT
-constexpr key input, so changing it cannot silently reuse the other implementation.
-Normal native compilation is still required. A changed generated implementation
-is rejected rather than receiving an unrelated expert binary.
+The native W2 prefetch implementation is a tracked C++ Cube-body fragment.
+`native_source` selects it before publication only after the complete generated
+Cube, shared declarations, ABI and exports match the reviewed fingerprint. The
+freshly generated Vector arithmetic is preserved. Both original and selected
+sources remain in the artifact report, and cache hits replay the same graft
+validation. The fragment and selector digest is a JIT constexpr key input, and
+the fragment is included in the model source manifest. Normal native compilation
+is still required; no retained binary is substituted for changed code.
 
 ## Native compilation and prepared data
 

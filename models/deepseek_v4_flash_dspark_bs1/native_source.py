@@ -6,12 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
-"""Select the tracked W2 implementation before publishing generated artifacts.
-
-No old binary is loaded. The original complete generated implementation and ABI
-must match before the tracked C++ is selected and compiled by the normal native
-builder. Changing the generated implementation requires an explicit review.
-"""
+"""Select the reviewed W2 Cube body while retaining generated Vector arithmetic."""
 
 from contextlib import contextmanager
 import hashlib
@@ -20,8 +15,10 @@ import json
 from pathlib import Path
 import re
 
-NATIVE_SOURCE = Path(__file__).resolve().parent / "native/experts_w2_prefetch.cpp"
-GENERATED_DIGEST = "296fcbd93e7a343de3d8b11651776316d7be0299edfbdb19fa133e7722970c2f"
+NATIVE_SOURCE = Path(__file__).resolve().parent / "native/experts_w2_prefetch.inc"
+GENERATED_CUBE_DIGEST = "bcefd5b7f4a590885e9e9c0753f3ffb76afe7db16410913964e5826178b0ad7f"
+CUBE_REGION = re.compile(r"^  #if defined\(__DAV_CUBE__\).*?^  #endif // __DAV_CUBE__", re.M | re.S)
+VECTOR_REGION = re.compile(r"^  #if defined\(__DAV_VEC__\).*?^  #endif // __DAV_VEC__", re.M | re.S)
 KERNEL_PATTERN = re.compile(
     r"\b(?:l2_s6_cycles_only_|l2_full_cycles_)?exp_routed_balanced"
     r"(?:_[0-9]+)?(?P<core>_aic|_aiv)?\b"
@@ -29,8 +26,9 @@ KERNEL_PATTERN = re.compile(
 
 
 def fingerprint():
-    """Include this digest in the JIT entry's constexpr cache-key arguments."""
-    return hashlib.sha256(NATIVE_SOURCE.read_bytes()).hexdigest()
+    """Key JIT artifacts by both the native fragment and its selector."""
+    content = NATIVE_SOURCE.read_bytes() + b"\0" + Path(__file__).read_bytes()
+    return hashlib.sha256(content).hexdigest()
 
 
 def normalized_cpp(text):
@@ -49,11 +47,29 @@ def normalized_cpp(text):
     return re.sub(r"\s+", "", re.sub(r"\b[A-Za-z_]\w*\b", rename, text))
 
 
+def compiled_cube_cpp(text):
+    """Retain the complete Cube, shared declarations, signatures and exports."""
+    if len(CUBE_REGION.findall(text)) != 1 or len(VECTOR_REGION.findall(text)) != 1:
+        raise ValueError("Expected one generated Cube and Vector region")
+    return normalized_cpp(VECTOR_REGION.sub("", text))
+
+
+def replace_cube_source(text, expected_fingerprint):
+    """Replace only the reviewed Cube region of one complete generated source."""
+    if fingerprint() != expected_fingerprint:
+        raise ValueError("Native W2 source differs from the requested build fingerprint")
+    digest = hashlib.sha256(compiled_cube_cpp(text).encode()).hexdigest()
+    if digest != GENERATED_CUBE_DIGEST:
+        raise ValueError(f"Unrecognized generated W2 Cube, ABI or shared declarations: {digest}")
+    regions = CUBE_REGION.findall(NATIVE_SOURCE.read_text())
+    if len(regions) != 1:
+        raise ValueError("Expected one reviewed native Cube body")
+    return CUBE_REGION.sub(lambda _: regions[0], text)
+
+
 def select_sources(files, expected_fingerprint):
-    """Return a new generated-file map, preserving the original source for audit."""
-    source = NATIVE_SOURCE.read_text()
-    actual_fingerprint = hashlib.sha256(source.encode()).hexdigest()
-    if actual_fingerprint != expected_fingerprint:
+    """Preserve generated Vector code and original sources for publication audit."""
+    if fingerprint() != expected_fingerprint:
         raise ValueError("Native W2 source differs from the requested build fingerprint")
     result = dict(files)
     selected = []
@@ -63,16 +79,17 @@ def select_sources(files, expected_fingerprint):
             continue
         if not KERNEL_PATTERN.fullmatch(path.stem) or not path.stem.endswith("_aic"):
             continue
-        digest = hashlib.sha256(normalized_cpp(text).encode()).hexdigest()
-        if digest != GENERATED_DIGEST:
-            raise ValueError(f"Unrecognized complete generated W2 implementation: {name}: {digest}")
+        selected_source = replace_cube_source(text, expected_fingerprint)
+        digest = hashlib.sha256(compiled_cube_cpp(text).encode()).hexdigest()
         result[str(Path("report/original-native-source") / path)] = text
-        result[name] = source
-        selected.append(dict(source=name, original_normalized_sha256=digest))
+        result[name] = selected_source
+        selected.append(dict(source=name, original_compiled_cube_sha256=digest,
+                             selected_source_sha256=hashlib.sha256(selected_source.encode()).hexdigest()))
     if len(selected) != 10:
         raise ValueError(f"Expected five W2 sites in each of two roles, found {len(selected)}")
     result["report/native-w2-source-selection.json"] = json.dumps(
-        dict(implementation="tracked_w2_prefetch", source_sha256=actual_fingerprint,
+        dict(implementation="tracked_w2_prefetch", source_sha256=expected_fingerprint,
+             fragment_sha256=hashlib.sha256(NATIVE_SOURCE.read_bytes()).hexdigest(),
              selected=selected, old_binaries_loaded=False, native_build="REQUIRED"),
         indent=2,
     ) + "\n"
