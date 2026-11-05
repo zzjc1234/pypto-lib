@@ -13,15 +13,53 @@ execution are subsequent stages, not side effects of this command.
 """
 
 import argparse
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import hashlib
 import importlib
 import json
 from pathlib import Path
 import sys
 import time
+from types import FunctionType, SimpleNamespace
 
 from . import native_source
+
+
+@contextmanager
+def ptoas_deadline(seconds):
+    """Bound this build's PTOAS calls without changing the installed backend.
+
+    The backend currently fixes each assembler subprocess to 60 seconds.
+    Large compensated vector functions need a longer resource budget; keep
+    its command construction, version checks and failure handling intact.
+    Build profiles run in separate processes, as required by their frozen
+    import-time shapes.
+    """
+    if type(seconds) is not int or not 1 <= seconds <= 600:
+        raise ValueError('PTOAS timeout must be an integer in [1, 600] seconds')
+    from pypto.backend import pto_backend
+
+    original = pto_backend._run_ptoas
+    original_subprocess = original.__globals__['subprocess']
+
+    def run(*args, **kwargs):
+        if kwargs.get('timeout') != 60:
+            raise RuntimeError('The backend PTOAS subprocess contract changed')
+        kwargs['timeout'] = seconds
+        return original_subprocess.run(*args, **kwargs)
+
+    globals_ = dict(original.__globals__)
+    globals_['subprocess'] = SimpleNamespace(
+        run=run, TimeoutExpired=original_subprocess.TimeoutExpired)
+    bounded = FunctionType(original.__code__, globals_, original.__name__,
+                           original.__defaults__, original.__closure__)
+    bounded.__kwdefaults__ = original.__kwdefaults__
+    bounded.__annotations__ = original.__annotations__
+    pto_backend._run_ptoas = bounded
+    try:
+        yield
+    finally:
+        pto_backend._run_ptoas = original
 
 
 def artifact_directory(compiled):
@@ -35,7 +73,7 @@ def source_manifest():
             for p in sorted(root.rglob('*')) if p.suffix in ('.py', '.cpp', '.inc')}
 
 
-def compile_program(profile, *, cache_root, device_ids):
+def compile_program(profile, *, cache_root, device_ids, ptoas_timeout_seconds=180):
     """Compile one immutable source profile; device IDs describe topology only."""
     if profile not in ('single', 'one', 'two', 'rsag'):
         raise ValueError('Unknown request-pipeline source profile')
@@ -75,7 +113,7 @@ def compile_program(profile, *, cache_root, device_ids):
         distributed_config=DistributedConfig(device_ids=device_ids, aicpu_thread_num=4),
     )
     context = native_source.use_native_w2(selected_source) if selected_source else nullcontext()
-    with context:
+    with context, ptoas_deadline(ptoas_timeout_seconds):
         compiled = function.compile(config=config, **kwargs)
     directory = artifact_directory(compiled)
     metadata = json.loads((directory / 'distributed_meta.json').read_text())
@@ -101,6 +139,7 @@ def compile_program(profile, *, cache_root, device_ids):
         metadata_sha256=hashlib.sha256((directory / 'distributed_meta.json').read_bytes()).hexdigest(),
         public_parameters=len(metadata['params']), sources=before,
         native_w2_source_sha256=selected_source, old_binaries_loaded=False,
+        ptoas_timeout_seconds=ptoas_timeout_seconds,
         model_weights_loaded=False, Worker=0, NPU=0, native=0,
     )
 
@@ -111,12 +150,15 @@ def main():
     parser.add_argument('--cache', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--devices', default='0,1,2,3,4,5,6,7')
+    parser.add_argument('--ptoas-timeout-seconds', type=int, default=180,
+                        help='Per-kernel assembler deadline, between 1 and 600 seconds')
     args = parser.parse_args()
     if args.report.exists():
         parser.error('The report already exists; preserve it and choose a new run directory')
     devices = [int(v) for v in args.devices.split(',')]
     started = time.monotonic()
-    _, report = compile_program(args.profile, cache_root=args.cache, device_ids=devices)
+    _, report = compile_program(args.profile, cache_root=args.cache, device_ids=devices,
+                                ptoas_timeout_seconds=args.ptoas_timeout_seconds)
     report['generation_seconds'] = time.monotonic() - started
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + '\n')

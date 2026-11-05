@@ -91,6 +91,11 @@ The other profiles are `single`, `one`, and `two`. This command creates generate
 artifacts only: it does not load weights, construct a Worker, allocate NPU memory,
 or measure performance. The eight device IDs describe logical compile topology;
 runtime board/chip mapping and capacity admission are separate.
+Each PTOAS subprocess has a default 180-second deadline for the compensated
+vector functions. `--ptoas-timeout-seconds` accepts a value from 1 to 600 and
+records it in the generated report. This scoped build policy preserves the
+backend's assembler command, version checks and errors, and restores its
+binding on exit; it does not modify the installed toolchain.
 
 The native W2 prefetch implementation is a tracked C++ Cube-body fragment.
 `native_source` selects it before publication only after the complete generated
