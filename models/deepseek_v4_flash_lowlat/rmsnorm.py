@@ -10,16 +10,25 @@
 """DeepSeek-V4 attention RMSNorm (dynamic shape): normalizes token-major
 activations for the decode attention path."""
 
+import ast
 import inspect
+import linecache
+import textwrap
 
 import pypto.language as pl
 
-from config import FLASH as M
-from decode_shapes import DECODE_BATCH, DECODE_SEQ
+if __package__:
+    from .config import FLASH as M
+else:
+    from config import FLASH as M
+if __package__:
+    from .decode_shapes import DECODE_BATCH, DECODE_SEQ
+else:
+    from decode_shapes import DECODE_BATCH, DECODE_SEQ
 
 
 # Dynamic shape variables.
-T_DYN = pl.dynamic("T_DYN")  # T = B * S
+T_DYN = pl.dynamic('LOWLAT_TARGET_T_DYN')  # T = B * S
 
 
 # model config
@@ -29,28 +38,30 @@ EPS = M.rms_norm_eps
 # tiling
 REDUCE_ROW_TILE = 16
 
-# Select the adapter in Python before JIT parsing: the old frontend rejects
-# the new keyword, while the explicit-precision frontend requires it with tmp.
-if "high_precision" in inspect.signature(pl.tile.rsqrt).parameters:
-
-    @pl.jit.inline
-    def _rsqrt_high_precision(
-        value: pl.Tile[[1, REDUCE_ROW_TILE], pl.FP32],
-        workspace: pl.Tile[[1, REDUCE_ROW_TILE], pl.FP32],
-    ):
-        return pl.tile.rsqrt(value, tmp=workspace, high_precision=True)
-
-else:
-
-    @pl.jit.inline
-    def _rsqrt_high_precision(
-        value: pl.Tile[[1, REDUCE_ROW_TILE], pl.FP32],
-        workspace: pl.Tile[[1, REDUCE_ROW_TILE], pl.FP32],
-    ):
-        return pl.tile.rsqrt(value, tmp=workspace)
 
 
-@pl.jit.inline
+def _jit_rsqrt_compatible(function):
+    """Select only the scratch-rsqrt API spelling before JIT specialization."""
+    if "high_precision" not in inspect.signature(pl.tile.rsqrt).parameters:
+        return pl.jit.inline(function)
+    source = textwrap.dedent(inspect.getsource(function))
+    tree = ast.parse(source)
+    definition = tree.body[0]
+    definition.decorator_list = []
+    calls = [node for node in ast.walk(definition) if isinstance(node, ast.Call)
+             and ast.unparse(node.func) == "pl.tile.rsqrt"]
+    if len(calls) != 1 or not any(k.arg == "tmp" for k in calls[0].keywords):
+        raise RuntimeError("The RMS scratch-rsqrt contract changed")
+    calls[0].keywords.append(ast.keyword(arg="high_precision", value=ast.Constant(True)))
+    selected = ast.unparse(ast.fix_missing_locations(tree)) + "\n"
+    filename = function.__code__.co_filename + ".explicit_rsqrt.py"
+    linecache.cache[filename] = (len(selected), None, selected.splitlines(True), filename)
+    namespace = dict(function.__globals__)
+    exec(compile(selected, filename, "exec"), namespace)
+    return pl.jit.inline(namespace[function.__name__])
+
+
+@_jit_rsqrt_compatible
 def rms_norm(
     x: pl.Tensor[[T_DYN, D], pl.BF16],
     norm_w: pl.Tensor[[D], pl.BF16],
@@ -201,7 +212,7 @@ def rms_norm(
         x_mean_sq = pl.mul(x_sq_sum, 1.0 / D)
         x_mean_eps = pl.add(x_mean_sq, EPS)
         rsqrt_tmp = pl.create_tile([1, REDUCE_ROW_TILE], dtype=pl.FP32)
-        raw_inverse = _rsqrt_high_precision(x_mean_eps, rsqrt_tmp)
+        raw_inverse = pl.tile.rsqrt(x_mean_eps, tmp=rsqrt_tmp)
         inverse_work = pl.tile.minimums(x_mean_eps, 1099511627776.0)
         inverse_square_as = pl.mul(raw_inverse, 4097.0)
         inverse_square_ad = pl.sub(inverse_square_as, raw_inverse)

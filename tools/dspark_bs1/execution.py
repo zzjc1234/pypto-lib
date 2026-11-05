@@ -15,7 +15,7 @@ import time
 
 import torch
 
-from models.deepseek_v4_flash_dspark_bs1.stream_controller import run_request
+from models.deepseek_v4_flash_lowlat.stream_controller import run_request
 
 from .buffers import CACHES, public_arguments, set_single_step
 from .checks import check_commit_oracle, check_packets

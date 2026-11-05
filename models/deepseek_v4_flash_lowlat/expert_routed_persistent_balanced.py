@@ -19,13 +19,31 @@ regions; intermediate activations stay on chip.
 
 
 import pypto.language as pl
-from fp32_numerics import rne_exp_signed
+if __package__:
+    from .fp32_numerics import rne_exp_signed
+else:
+    from fp32_numerics import rne_exp_signed
 
-from config import (INT8_SCALE_MAX, INT8_AMAX_EPS)
-from expert_routed import (
-    D, IDX_PAD, MOE_INTER, N_BANK, N_SLOTS_B, RECV_MAX, RECV_TILE, SWIGLU_LIMIT,
-    build_tensor_specs, golden_expert_routed, compare_recv_y,
-)
+if __package__:
+    from .config import INT8_SCALE_MAX, INT8_AMAX_EPS
+else:
+    from config import INT8_SCALE_MAX, INT8_AMAX_EPS
+if __package__:
+    from .expert_routed import (
+        D,
+        IDX_PAD,
+        MOE_INTER,
+        N_BANK,
+        N_SLOTS_B,
+        RECV_MAX,
+        RECV_TILE,
+        SWIGLU_LIMIT,
+        build_tensor_specs,
+        golden_expert_routed,
+        compare_recv_y,
+    )
+else:
+    from expert_routed import D, IDX_PAD, MOE_INTER, N_BANK, N_SLOTS_B, RECV_MAX, RECV_TILE, SWIGLU_LIMIT, build_tensor_specs, golden_expert_routed, compare_recv_y
 
 
 # Persistent blocks == the a2a3 AIC count. No barrier lives in this kernel, so a
@@ -360,7 +378,11 @@ def expert_routed_persistent_balanced_test(
 
 if __name__ == "__main__":
     import argparse
-    from decode_shapes import TP
+
+    if __package__:
+        from .decode_shapes import TP
+    else:
+        from decode_shapes import TP
     from golden import run
 
     parser = argparse.ArgumentParser()

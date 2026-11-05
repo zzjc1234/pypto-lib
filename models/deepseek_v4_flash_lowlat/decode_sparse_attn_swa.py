@@ -16,16 +16,24 @@ variants live in sibling modules.
 
 import pypto.language as pl
 
-from fp32_numerics import rne_exp_nonpositive
+if __package__:
+    from .fp32_numerics import rne_exp_nonpositive, rne_exp_signed
+else:
+    from fp32_numerics import rne_exp_nonpositive, rne_exp_signed
 
-from o_proj_grouped import o_proj_grouped
 
-from config import FLASH as M, INT8_SCALE_MAX, INT8_AMAX_EPS
-from decode_shapes import DECODE_BATCH, DECODE_SEQ, BLOCK_SIZE, DECODE_ORI_BLOCK_NUM, KV_ORI_MAX_BLOCKS
+if __package__:
+    from .config import FLASH as M, INT8_SCALE_MAX, INT8_AMAX_EPS
+else:
+    from config import FLASH as M, INT8_SCALE_MAX, INT8_AMAX_EPS
+if __package__:
+    from .decode_shapes import DECODE_BATCH, DECODE_SEQ, BLOCK_SIZE, DECODE_ORI_BLOCK_NUM, KV_ORI_MAX_BLOCKS
+else:
+    from decode_shapes import DECODE_BATCH, DECODE_SEQ, BLOCK_SIZE, DECODE_ORI_BLOCK_NUM, KV_ORI_MAX_BLOCKS
 
 
 # Dynamic shape variables.
-ORI_BLOCK_NUM_DYN = pl.dynamic("ORI_BLOCK_NUM_DYN")
+ORI_BLOCK_NUM_DYN = pl.dynamic('LOWLAT_TARGET_ORI_BLOCK_NUM_DYN')
 
 # model config
 B = DECODE_BATCH
@@ -260,11 +268,62 @@ def sparse_attn_swa_packed(
 
         m_h_global = head_base + m_h0
         n_sink = pl.reshape(attn_sink[m_h_global : m_h_global + H_TILE], [H_TILE, 1])
+        n_sink_delta = pl.create_tensor([H_TILE, 1], dtype=pl.FP32)
         n_sink_delta = pl.sub(n_sink, m_mi)
-        n_sink_exp = pl.exp(n_sink_delta)
+        n_sink_exp = rne_exp_signed(n_sink_delta, rows=H_TILE, cols=1, safe_zero=True, negate=False)
         n_denom = pl.add(m_li, n_sink_exp)
-        n_normalized = pl.row_expand_div(m_oi, n_denom)
-        n_full = n_normalized[0:H_TILE, 0:HEAD_DIM]
+        n_div_seed = pl.row_expand_div(m_oi, n_denom)[0:H_TILE, 0:HEAD_DIM]
+        n_div_left_v = m_oi[:, 0:0 + 256]
+        n_div_left_estimate = n_div_seed[:, 0:0 + 256]
+        n_div_left_zero = pl.sub(n_div_left_v, n_div_left_v)
+        n_div_left_expanded = pl.row_expand_add(n_div_left_zero, n_denom)
+        n_div_left_a_split = pl.mul(n_div_left_estimate, 4097.0)
+        n_div_left_a_delta = pl.sub(n_div_left_a_split, n_div_left_estimate)
+        n_div_left_a_hi = pl.sub(n_div_left_a_split, n_div_left_a_delta)
+        n_div_left_a_lo = pl.sub(n_div_left_estimate, n_div_left_a_hi)
+        n_div_left_b_split = pl.mul(n_div_left_expanded, 4097.0)
+        n_div_left_b_delta = pl.sub(n_div_left_b_split, n_div_left_expanded)
+        n_div_left_b_hi = pl.sub(n_div_left_b_split, n_div_left_b_delta)
+        n_div_left_b_lo = pl.sub(n_div_left_expanded, n_div_left_b_hi)
+        n_div_left_product = pl.mul(n_div_left_estimate, n_div_left_expanded)
+        n_div_left_high_product = pl.mul(n_div_left_a_hi, n_div_left_b_hi)
+        n_div_left_error0 = pl.sub(n_div_left_high_product, n_div_left_product)
+        n_div_left_high_low = pl.mul(n_div_left_a_hi, n_div_left_b_lo)
+        n_div_left_error1 = pl.add(n_div_left_error0, n_div_left_high_low)
+        n_div_left_low_high = pl.mul(n_div_left_a_lo, n_div_left_b_hi)
+        n_div_left_error2 = pl.add(n_div_left_error1, n_div_left_low_high)
+        n_div_left_low_product = pl.mul(n_div_left_a_lo, n_div_left_b_lo)
+        n_div_left_error = pl.add(n_div_left_error2, n_div_left_low_product)
+        n_div_left_residual_hi = pl.sub(n_div_left_v, n_div_left_product)
+        n_div_left_residual = pl.sub(n_div_left_residual_hi, n_div_left_error)
+        n_div_left_correction = pl.div(n_div_left_residual, n_div_left_expanded)
+        n_div_left_fixed = pl.add(n_div_left_estimate, n_div_left_correction)
+        n_div_right_v = m_oi[:, 256:256 + 256]
+        n_div_right_estimate = n_div_seed[:, 256:256 + 256]
+        n_div_right_zero = pl.sub(n_div_right_v, n_div_right_v)
+        n_div_right_expanded = pl.row_expand_add(n_div_right_zero, n_denom)
+        n_div_right_a_split = pl.mul(n_div_right_estimate, 4097.0)
+        n_div_right_a_delta = pl.sub(n_div_right_a_split, n_div_right_estimate)
+        n_div_right_a_hi = pl.sub(n_div_right_a_split, n_div_right_a_delta)
+        n_div_right_a_lo = pl.sub(n_div_right_estimate, n_div_right_a_hi)
+        n_div_right_b_split = pl.mul(n_div_right_expanded, 4097.0)
+        n_div_right_b_delta = pl.sub(n_div_right_b_split, n_div_right_expanded)
+        n_div_right_b_hi = pl.sub(n_div_right_b_split, n_div_right_b_delta)
+        n_div_right_b_lo = pl.sub(n_div_right_expanded, n_div_right_b_hi)
+        n_div_right_product = pl.mul(n_div_right_estimate, n_div_right_expanded)
+        n_div_right_high_product = pl.mul(n_div_right_a_hi, n_div_right_b_hi)
+        n_div_right_error0 = pl.sub(n_div_right_high_product, n_div_right_product)
+        n_div_right_high_low = pl.mul(n_div_right_a_hi, n_div_right_b_lo)
+        n_div_right_error1 = pl.add(n_div_right_error0, n_div_right_high_low)
+        n_div_right_low_high = pl.mul(n_div_right_a_lo, n_div_right_b_hi)
+        n_div_right_error2 = pl.add(n_div_right_error1, n_div_right_low_high)
+        n_div_right_low_product = pl.mul(n_div_right_a_lo, n_div_right_b_lo)
+        n_div_right_error = pl.add(n_div_right_error2, n_div_right_low_product)
+        n_div_right_residual_hi = pl.sub(n_div_right_v, n_div_right_product)
+        n_div_right_residual = pl.sub(n_div_right_residual_hi, n_div_right_error)
+        n_div_right_correction = pl.div(n_div_right_residual, n_div_right_expanded)
+        n_div_right_fixed = pl.add(n_div_right_estimate, n_div_right_correction)
+        n_full = pl.concat(n_div_left_fixed, n_div_right_fixed)
         n_bf16 = pl.cast(n_full, target_type=pl.BF16, mode="rint")
 
         m_rope = n_full[:, NOPE_DIM:HEAD_DIM]
@@ -308,44 +367,6 @@ def sparse_attn_swa_packed(
 
 
 
-@pl.jit.inline
-def sparse_attn_swa(
-    q: pl.Tensor[[T, H, HEAD_DIM], pl.BF16],
-    ori_kv: pl.Tensor[[ORI_BLOCK_NUM_DYN, BLOCK_SIZE, 1, HEAD_DIM], pl.BF16],
-    swa_indices: pl.Tensor[[T, WIN], pl.INT32],
-    swa_lens: pl.Tensor[[T], pl.INT32],
-    sparse_bias: pl.Tensor[[T, PADDED_TOPK], pl.FP32],
-    attn_sink: pl.Tensor[[H], pl.FP32],
-    freqs_cos: pl.Tensor[[T, ROPE_DIM], pl.BF16],
-    freqs_sin: pl.Tensor[[T, ROPE_DIM], pl.BF16],
-    wo_a: pl.Tensor[[O_GROUPS, O_LORA, O_GROUP_IN], pl.BF16],
-    wo_b: pl.Tensor[[D, O_GROUPS * O_LORA], pl.INT8],
-    wo_b_scale: pl.Tensor[[D], pl.FP32],
-    attn_out: pl.Tensor[[T, D], pl.BF16],
-):
-    """Sparse decode attention over the sliding window, and inverse RoPE, then the replicated grouped o_proj.
-
-    The model path stops at `sparse_attn_swa_packed` and hands `o_packed` to the TP-by-group
-    projection in `o_proj_tp`; this replicated form stays as the single-card unit
-    entry below, whose subject is the attention, not the projection.
-    """
-    o_packed = pl.create_tensor([O_GROUPS * T, O_GROUP_IN], dtype=pl.BF16)
-    rope_cos_il = pl.create_tensor([T, ROPE_DIM], dtype=pl.FP32)
-    rope_sin_signed = pl.create_tensor([T, ROPE_DIM], dtype=pl.FP32)
-    rope_swap_idx = pl.create_tensor([H_TILE, ROPE_DIM], dtype=pl.INT32)
-    prepare_swa_output_rope(freqs_cos, freqs_sin, rope_cos_il, rope_sin_signed, rope_swap_idx)
-    # The packed attention is head-sharded: one call writes group `my_rank`'s heads
-    # only, while the replicated projection reads every group, so run it per group.
-    merge_tids = pl.array.create(O_GROUPS, pl.TASK_ID)
-    for g in pl.range(O_GROUPS):
-        g_tid = sparse_attn_swa_packed(
-            q, ori_kv, swa_indices, swa_lens, sparse_bias, attn_sink,
-            freqs_cos, freqs_sin, o_packed, pl.cast(g, pl.INT32), rope_cos_il, rope_sin_signed, rope_swap_idx,
-        )
-        merge_tids[g] = g_tid
-    merge_tid = pl.system.task_dummy(deps=[merge_tids])
-    o_proj_grouped(o_packed, merge_tid, wo_a, wo_b, wo_b_scale, attn_out)
-    return attn_out
 
 @pl.jit
 def sparse_attn_test(
@@ -394,9 +415,14 @@ def sparse_attn_test(
 
 def golden_sparse_attn(tensors):
     import math
+
     """Torch reference: sparse_attn decode path followed by grouped o_proj."""
     import torch
-    from utils import bf16_matmul_fp32, grouped_bf16_matmul_fp32
+
+    if __package__:
+        from .utils import bf16_matmul_fp32, grouped_bf16_matmul_fp32
+    else:
+        from utils import bf16_matmul_fp32, grouped_bf16_matmul_fp32
 
     q = tensors["q"].float()
     ori_kv = tensors["ori_kv"].float()
@@ -435,10 +461,12 @@ def golden_sparse_attn(tensors):
                 dtype=torch.bool,
             )
             if end - start < ATTN_K_TILE:
-                valid_tile = torch.cat([
-                    valid_tile,
-                    torch.zeros(ATTN_K_TILE - (end - start), dtype=torch.bool),
-                ])
+                valid_tile = torch.cat(
+                    [
+                        valid_tile,
+                        torch.zeros(ATTN_K_TILE - (end - start), dtype=torch.bool),
+                    ]
+                )
             valid_tile = valid_tile.to(device=ori_kv.device)
             kv_tile = torch.zeros(ATTN_K_TILE, HEAD_DIM, dtype=ori_kv.dtype, device=ori_kv.device)
             for r, slot in enumerate(slots):
@@ -451,7 +479,9 @@ def golden_sparse_attn(tensors):
             scores = scores.masked_fill(~valid_tile.unsqueeze(0), NEG_INF)
             mi = scores.max(dim=-1, keepdim=True).values
             exp_values = [math.exp(value) for value in (scores - mi).reshape(-1).tolist()]
-            exp_scores = torch.tensor(exp_values, dtype=torch.float32, device=scores.device).reshape_as(scores)
+            exp_scores = torch.tensor(exp_values, dtype=torch.float32, device=scores.device).reshape_as(
+                scores
+            )
             exp_scores = exp_scores.masked_fill(~valid_tile.unsqueeze(0), 0.0)
             li64 = exp_scores[..., :64] + exp_scores[..., 64:128]
             li32 = li64[..., :32] + li64[..., 32:64]
@@ -498,22 +528,22 @@ def golden_sparse_attn(tensors):
     # activation scale before the groups are summed (the per-group scale cannot
     # factor out of the K-sum), then the per-channel weight scale is applied.
     o_r_g = o_r.reshape(T, O_GROUPS, O_LORA)
-    amax_g = o_r_g.abs().amax(dim=-1, keepdim=True).clamp_min(INT8_AMAX_EPS)   # [T, G, 1]
+    amax_g = o_r_g.abs().amax(dim=-1, keepdim=True).clamp_min(INT8_AMAX_EPS)  # [T, G, 1]
     scale_q_g = INT8_SCALE_MAX / amax_g
     if tensors.get("tp_projection", False):
         scale_q_g = torch.div(torch.full_like(amax_g, INT8_SCALE_MAX), amax_g)
     o_r_i8_g = torch.round(o_r_g * scale_q_g).to(torch.int32).to(torch.float16).to(torch.int8)
-    scale_dq_g = 1.0 / scale_q_g                                              # [T, G, 1]
+    scale_dq_g = 1.0 / scale_q_g  # [T, G, 1]
     wo_b_g = wo_b_i8.reshape(D, O_GROUPS, O_LORA)
     out = torch.zeros(T, D, dtype=torch.float32)
     for g in range(O_GROUPS):
-        p_g = o_r_i8_g[:, g].to(torch.int32) @ wo_b_g[:, g].to(torch.int32).T   # [T, D]
+        p_g = o_r_i8_g[:, g].to(torch.int32) @ wo_b_g[:, g].to(torch.int32).T  # [T, D]
         partial = p_g.float() * scale_dq_g[:, g]
         if tensors.get("tp_projection", False):
             partial = partial * wo_b_scale.unsqueeze(0)
-        out = out + partial                             # per-row group scale
+        out = out + partial  # per-row group scale
     if not tensors.get("tp_projection", False):
-        out = out * wo_b_scale.unsqueeze(0)                                        # per-channel weight scale
+        out = out * wo_b_scale.unsqueeze(0)  # per-channel weight scale
 
     tensors["attn_out"][:] = out.to(torch.bfloat16)
 
@@ -524,7 +554,11 @@ def build_tensor_specs(
     """Build deterministic demo tensors for the merged standalone harness."""
     import torch
     from golden import TensorSpec
-    from utils import block_table, quant_w_per_channel
+
+    if __package__:
+        from .utils import block_table, quant_w_per_channel
+    else:
+        from utils import block_table, quant_w_per_channel
 
     def init_q():
         """Initialize the query tensor used by the decode attention stage."""
@@ -584,7 +618,7 @@ def build_tensor_specs(
 
     def init_wo_a():
         """Initialize the grouped first-stage output-projection weights."""
-        return (torch.rand(O_GROUPS, O_LORA, O_GROUP_IN) - 0.5) / (O_GROUP_IN ** 0.5)
+        return (torch.rand(O_GROUPS, O_LORA, O_GROUP_IN) - 0.5) / (O_GROUP_IN**0.5)
 
     wo_b_bf16 = ((torch.rand(D, O_GROUPS * O_LORA) - 0.5) / ((O_GROUPS * O_LORA) ** 0.5)).to(torch.bfloat16)
     wo_b_i8, wo_b_scale = quant_w_per_channel(wo_b_bf16)
@@ -599,7 +633,9 @@ def build_tensor_specs(
 
     return [
         TensorSpec("q", [T, H, HEAD_DIM], torch.bfloat16, init_value=init_q),
-        TensorSpec("ori_kv", [ORI_BLOCK_NUM, BLOCK_SIZE, 1, HEAD_DIM], torch.bfloat16, init_value=init_ori_kv),
+        TensorSpec(
+            "ori_kv", [ORI_BLOCK_NUM, BLOCK_SIZE, 1, HEAD_DIM], torch.bfloat16, init_value=init_ori_kv
+        ),
         TensorSpec("swa_indices", [T, WIN], torch.int32, init_value=init_swa_indices),
         TensorSpec("swa_lens", [T], torch.int32, init_value=init_swa_lens),
         TensorSpec("attn_sink", [H], torch.float32, init_value=init_attn_sink),
@@ -613,6 +649,11 @@ def build_tensor_specs(
 
 
 if __name__ == "__main__":
+    if __package__:
+        from .attention_grouped import sparse_attn_swa
+    else:
+        from attention_grouped import sparse_attn_swa
+
     import argparse
     from golden import ratio_allclose, run
 

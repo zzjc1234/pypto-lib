@@ -12,10 +12,19 @@
 
 import pypto.language as pl
 
-from fp32_numerics import rne_exp_nonpositive, correct_log_seed, correct_sqrt_bounded, normalize_topk
+if __package__:
+    from .fp32_numerics import rne_exp_nonpositive, correct_log_seed, correct_sqrt_bounded, normalize_topk
+else:
+    from fp32_numerics import rne_exp_nonpositive, correct_log_seed, correct_sqrt_bounded, normalize_topk
 
-from config import FLASH as M, FP32_NEG_INF, INT8_SCALE_MAX, INT8_AMAX_EPS
-from decode_shapes import MOE_TOKENS
+if __package__:
+    from .config import FLASH as M, FP32_NEG_INF, INT8_SCALE_MAX, INT8_AMAX_EPS
+else:
+    from config import FLASH as M, FP32_NEG_INF, INT8_SCALE_MAX, INT8_AMAX_EPS
+if __package__:
+    from .decode_shapes import MOE_TOKENS
+else:
+    from decode_shapes import MOE_TOKENS
 
 
 # model config
@@ -137,146 +146,376 @@ def gate(
             rmsfix_variance = pl.add(pl.mul(sq_sum, 1.0 / D), NORM_EPS)
             rmsfix_raw_sqrt = pl.sqrt(rmsfix_variance)
             rmsfix_raw_inv = pl.recip(rmsfix_raw_sqrt)
-            rmsfix_safe_var = pl.minimum(pl.maximum(rmsfix_variance, 2.0 ** -40), 2.0 ** 40)
-            rmsfix_safe_seed = pl.minimum(pl.maximum(rmsfix_raw_sqrt, 2.0 ** -20), 2.0 ** 20)
+            rmsfix_safe_var = pl.minimum(pl.maximum(rmsfix_variance, 2.0**-40), 2.0**40)
+            rmsfix_safe_seed = pl.minimum(pl.maximum(rmsfix_raw_sqrt, 2.0**-20), 2.0**20)
             rmsfix_newton_sqrt_seed_result_0 = rmsfix_safe_var
             rmsfix_newton_sqrt_seed_work_1 = pl.mul(rmsfix_safe_var, 0.25)
             rmsfix_newton_sqrt_seed_z_2 = pl.mul(rmsfix_safe_seed, 0.5)
             rmsfix_newton_sqrt_seed_split_3 = pl.mul(rmsfix_newton_sqrt_seed_z_2, 4097.0)
-            rmsfix_newton_sqrt_seed_delta_4 = pl.sub(rmsfix_newton_sqrt_seed_split_3, rmsfix_newton_sqrt_seed_z_2)
-            rmsfix_newton_sqrt_seed_hi_5 = pl.sub(rmsfix_newton_sqrt_seed_split_3, rmsfix_newton_sqrt_seed_delta_4)
+            rmsfix_newton_sqrt_seed_delta_4 = pl.sub(
+                rmsfix_newton_sqrt_seed_split_3, rmsfix_newton_sqrt_seed_z_2
+            )
+            rmsfix_newton_sqrt_seed_hi_5 = pl.sub(
+                rmsfix_newton_sqrt_seed_split_3, rmsfix_newton_sqrt_seed_delta_4
+            )
             rmsfix_newton_sqrt_seed_lo_6 = pl.sub(rmsfix_newton_sqrt_seed_z_2, rmsfix_newton_sqrt_seed_hi_5)
-            rmsfix_newton_sqrt_seed_product_7 = pl.mul(rmsfix_newton_sqrt_seed_z_2, rmsfix_newton_sqrt_seed_z_2)
-            rmsfix_newton_sqrt_seed_hi_product_8 = pl.mul(rmsfix_newton_sqrt_seed_hi_5, rmsfix_newton_sqrt_seed_hi_5)
-            rmsfix_newton_sqrt_seed_error_9 = pl.sub(rmsfix_newton_sqrt_seed_hi_product_8, rmsfix_newton_sqrt_seed_product_7)
-            rmsfix_newton_sqrt_seed_cross_10 = pl.mul(rmsfix_newton_sqrt_seed_hi_5, rmsfix_newton_sqrt_seed_lo_6)
-            rmsfix_newton_sqrt_seed_error_11 = pl.add(rmsfix_newton_sqrt_seed_error_9, rmsfix_newton_sqrt_seed_cross_10)
-            rmsfix_newton_sqrt_seed_error_12 = pl.add(rmsfix_newton_sqrt_seed_error_11, rmsfix_newton_sqrt_seed_cross_10)
-            rmsfix_newton_sqrt_seed_lo_product_13 = pl.mul(rmsfix_newton_sqrt_seed_lo_6, rmsfix_newton_sqrt_seed_lo_6)
-            rmsfix_newton_sqrt_seed_error_14 = pl.add(rmsfix_newton_sqrt_seed_error_12, rmsfix_newton_sqrt_seed_lo_product_13)
-            rmsfix_newton_sqrt_seed_residual_high_15 = pl.sub(rmsfix_newton_sqrt_seed_work_1, rmsfix_newton_sqrt_seed_product_7)
-            rmsfix_newton_sqrt_seed_residual_16 = pl.sub(rmsfix_newton_sqrt_seed_residual_high_15, rmsfix_newton_sqrt_seed_error_14)
+            rmsfix_newton_sqrt_seed_product_7 = pl.mul(
+                rmsfix_newton_sqrt_seed_z_2, rmsfix_newton_sqrt_seed_z_2
+            )
+            rmsfix_newton_sqrt_seed_hi_product_8 = pl.mul(
+                rmsfix_newton_sqrt_seed_hi_5, rmsfix_newton_sqrt_seed_hi_5
+            )
+            rmsfix_newton_sqrt_seed_error_9 = pl.sub(
+                rmsfix_newton_sqrt_seed_hi_product_8, rmsfix_newton_sqrt_seed_product_7
+            )
+            rmsfix_newton_sqrt_seed_cross_10 = pl.mul(
+                rmsfix_newton_sqrt_seed_hi_5, rmsfix_newton_sqrt_seed_lo_6
+            )
+            rmsfix_newton_sqrt_seed_error_11 = pl.add(
+                rmsfix_newton_sqrt_seed_error_9, rmsfix_newton_sqrt_seed_cross_10
+            )
+            rmsfix_newton_sqrt_seed_error_12 = pl.add(
+                rmsfix_newton_sqrt_seed_error_11, rmsfix_newton_sqrt_seed_cross_10
+            )
+            rmsfix_newton_sqrt_seed_lo_product_13 = pl.mul(
+                rmsfix_newton_sqrt_seed_lo_6, rmsfix_newton_sqrt_seed_lo_6
+            )
+            rmsfix_newton_sqrt_seed_error_14 = pl.add(
+                rmsfix_newton_sqrt_seed_error_12, rmsfix_newton_sqrt_seed_lo_product_13
+            )
+            rmsfix_newton_sqrt_seed_residual_high_15 = pl.sub(
+                rmsfix_newton_sqrt_seed_work_1, rmsfix_newton_sqrt_seed_product_7
+            )
+            rmsfix_newton_sqrt_seed_residual_16 = pl.sub(
+                rmsfix_newton_sqrt_seed_residual_high_15, rmsfix_newton_sqrt_seed_error_14
+            )
             rmsfix_newton_sqrt_seed_denominator_17 = pl.mul(rmsfix_newton_sqrt_seed_z_2, 2.0)
-            rmsfix_newton_sqrt_seed_step_18 = pl.div(rmsfix_newton_sqrt_seed_residual_16, rmsfix_newton_sqrt_seed_denominator_17)
-            rmsfix_newton_sqrt_seed_adjusted_19 = pl.add(rmsfix_newton_sqrt_seed_z_2, rmsfix_newton_sqrt_seed_step_18)
+            rmsfix_newton_sqrt_seed_step_18 = pl.div(
+                rmsfix_newton_sqrt_seed_residual_16, rmsfix_newton_sqrt_seed_denominator_17
+            )
+            rmsfix_newton_sqrt_seed_adjusted_19 = pl.add(
+                rmsfix_newton_sqrt_seed_z_2, rmsfix_newton_sqrt_seed_step_18
+            )
             rmsfix_newton_sqrt_seed_result_20 = pl.mul(rmsfix_newton_sqrt_seed_adjusted_19, 2.0)
             rmsfix_midpoint_sqrt_seed_result_21 = rmsfix_newton_sqrt_seed_result_20
-            rmsfix_midpoint_sqrt_seed_neighbor_delta_22 = pl.mul(rmsfix_newton_sqrt_seed_result_20, 2.0 ** (-24) + 2.0 ** (-47))
-            rmsfix_midpoint_sqrt_seed_lower_23 = pl.sub(rmsfix_newton_sqrt_seed_result_20, rmsfix_midpoint_sqrt_seed_neighbor_delta_22)
-            rmsfix_midpoint_sqrt_seed_upper_24 = pl.add(rmsfix_newton_sqrt_seed_result_20, rmsfix_midpoint_sqrt_seed_neighbor_delta_22)
+            rmsfix_midpoint_sqrt_seed_neighbor_delta_22 = pl.mul(
+                rmsfix_newton_sqrt_seed_result_20, 2.0 ** (-24) + 2.0 ** (-47)
+            )
+            rmsfix_midpoint_sqrt_seed_lower_23 = pl.sub(
+                rmsfix_newton_sqrt_seed_result_20, rmsfix_midpoint_sqrt_seed_neighbor_delta_22
+            )
+            rmsfix_midpoint_sqrt_seed_upper_24 = pl.add(
+                rmsfix_newton_sqrt_seed_result_20, rmsfix_midpoint_sqrt_seed_neighbor_delta_22
+            )
             rmsfix_midpoint_sqrt_seed_z_25 = pl.mul(rmsfix_newton_sqrt_seed_result_20, 0.5)
-            rmsfix_midpoint_sqrt_seed_lo_gap_raw_26 = pl.sub(rmsfix_newton_sqrt_seed_result_20, rmsfix_midpoint_sqrt_seed_lower_23)
+            rmsfix_midpoint_sqrt_seed_lo_gap_raw_26 = pl.sub(
+                rmsfix_newton_sqrt_seed_result_20, rmsfix_midpoint_sqrt_seed_lower_23
+            )
             rmsfix_midpoint_sqrt_seed_lo_gap_27 = pl.mul(rmsfix_midpoint_sqrt_seed_lo_gap_raw_26, 0.5)
-            rmsfix_midpoint_sqrt_seed_hi_gap_raw_28 = pl.sub(rmsfix_midpoint_sqrt_seed_upper_24, rmsfix_newton_sqrt_seed_result_20)
+            rmsfix_midpoint_sqrt_seed_hi_gap_raw_28 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_upper_24, rmsfix_newton_sqrt_seed_result_20
+            )
             rmsfix_midpoint_sqrt_seed_hi_gap_29 = pl.mul(rmsfix_midpoint_sqrt_seed_hi_gap_raw_28, 0.5)
             rmsfix_midpoint_sqrt_seed_split_30 = pl.mul(rmsfix_midpoint_sqrt_seed_z_25, 4097.0)
-            rmsfix_midpoint_sqrt_seed_split_delta_31 = pl.sub(rmsfix_midpoint_sqrt_seed_split_30, rmsfix_midpoint_sqrt_seed_z_25)
-            rmsfix_midpoint_sqrt_seed_hi_32 = pl.sub(rmsfix_midpoint_sqrt_seed_split_30, rmsfix_midpoint_sqrt_seed_split_delta_31)
-            rmsfix_midpoint_sqrt_seed_lo_33 = pl.sub(rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_hi_32)
-            rmsfix_midpoint_sqrt_seed_product_34 = pl.mul(rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_z_25)
-            rmsfix_midpoint_sqrt_seed_cross_35 = pl.mul(rmsfix_midpoint_sqrt_seed_hi_32, rmsfix_midpoint_sqrt_seed_lo_33)
-            rmsfix_midpoint_sqrt_seed_hi_product_36 = pl.mul(rmsfix_midpoint_sqrt_seed_hi_32, rmsfix_midpoint_sqrt_seed_hi_32)
-            rmsfix_midpoint_sqrt_seed_error_37 = pl.sub(rmsfix_midpoint_sqrt_seed_hi_product_36, rmsfix_midpoint_sqrt_seed_product_34)
-            rmsfix_midpoint_sqrt_seed_error_38 = pl.add(rmsfix_midpoint_sqrt_seed_error_37, rmsfix_midpoint_sqrt_seed_cross_35)
-            rmsfix_midpoint_sqrt_seed_error_39 = pl.add(rmsfix_midpoint_sqrt_seed_error_38, rmsfix_midpoint_sqrt_seed_cross_35)
-            rmsfix_midpoint_sqrt_seed_lo_product_40 = pl.mul(rmsfix_midpoint_sqrt_seed_lo_33, rmsfix_midpoint_sqrt_seed_lo_33)
-            rmsfix_midpoint_sqrt_seed_error_41 = pl.add(rmsfix_midpoint_sqrt_seed_error_39, rmsfix_midpoint_sqrt_seed_lo_product_40)
+            rmsfix_midpoint_sqrt_seed_split_delta_31 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_split_30, rmsfix_midpoint_sqrt_seed_z_25
+            )
+            rmsfix_midpoint_sqrt_seed_hi_32 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_split_30, rmsfix_midpoint_sqrt_seed_split_delta_31
+            )
+            rmsfix_midpoint_sqrt_seed_lo_33 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_hi_32
+            )
+            rmsfix_midpoint_sqrt_seed_product_34 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_z_25
+            )
+            rmsfix_midpoint_sqrt_seed_cross_35 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_hi_32, rmsfix_midpoint_sqrt_seed_lo_33
+            )
+            rmsfix_midpoint_sqrt_seed_hi_product_36 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_hi_32, rmsfix_midpoint_sqrt_seed_hi_32
+            )
+            rmsfix_midpoint_sqrt_seed_error_37 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_hi_product_36, rmsfix_midpoint_sqrt_seed_product_34
+            )
+            rmsfix_midpoint_sqrt_seed_error_38 = pl.add(
+                rmsfix_midpoint_sqrt_seed_error_37, rmsfix_midpoint_sqrt_seed_cross_35
+            )
+            rmsfix_midpoint_sqrt_seed_error_39 = pl.add(
+                rmsfix_midpoint_sqrt_seed_error_38, rmsfix_midpoint_sqrt_seed_cross_35
+            )
+            rmsfix_midpoint_sqrt_seed_lo_product_40 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_lo_33, rmsfix_midpoint_sqrt_seed_lo_33
+            )
+            rmsfix_midpoint_sqrt_seed_error_41 = pl.add(
+                rmsfix_midpoint_sqrt_seed_error_39, rmsfix_midpoint_sqrt_seed_lo_product_40
+            )
             rmsfix_midpoint_sqrt_seed_quarter_var_42 = pl.mul(rmsfix_safe_var, 0.25)
-            rmsfix_midpoint_sqrt_seed_residual_input_43 = pl.sub(rmsfix_midpoint_sqrt_seed_quarter_var_42, rmsfix_midpoint_sqrt_seed_product_34)
+            rmsfix_midpoint_sqrt_seed_residual_input_43 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_quarter_var_42, rmsfix_midpoint_sqrt_seed_product_34
+            )
             rmsfix_midpoint_sqrt_seed_negative_error_44 = pl.neg(rmsfix_midpoint_sqrt_seed_error_41)
-            rmsfix_midpoint_sqrt_seed_rh_45 = pl.add(rmsfix_midpoint_sqrt_seed_residual_input_43, rmsfix_midpoint_sqrt_seed_negative_error_44)
-            rmsfix_midpoint_sqrt_seed_residual_z_46 = pl.sub(rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_residual_input_43)
-            rmsfix_midpoint_sqrt_seed_residual_sum_minus_z_47 = pl.sub(rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_residual_z_46)
-            rmsfix_midpoint_sqrt_seed_residual_a_error_48 = pl.sub(rmsfix_midpoint_sqrt_seed_residual_input_43, rmsfix_midpoint_sqrt_seed_residual_sum_minus_z_47)
-            rmsfix_midpoint_sqrt_seed_residual_b_error_49 = pl.sub(rmsfix_midpoint_sqrt_seed_negative_error_44, rmsfix_midpoint_sqrt_seed_residual_z_46)
-            rmsfix_midpoint_sqrt_seed_rl_50 = pl.add(rmsfix_midpoint_sqrt_seed_residual_a_error_48, rmsfix_midpoint_sqrt_seed_residual_b_error_49)
-            rmsfix_midpoint_sqrt_seed_z_lo_gap_51 = pl.mul(rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_lo_gap_27)
-            rmsfix_midpoint_sqrt_seed_l1_52 = pl.add(rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_z_lo_gap_51)
-            rmsfix_midpoint_sqrt_seed_lower_first_z_53 = pl.sub(rmsfix_midpoint_sqrt_seed_l1_52, rmsfix_midpoint_sqrt_seed_rh_45)
-            rmsfix_midpoint_sqrt_seed_lower_first_sum_minus_z_54 = pl.sub(rmsfix_midpoint_sqrt_seed_l1_52, rmsfix_midpoint_sqrt_seed_lower_first_z_53)
-            rmsfix_midpoint_sqrt_seed_lower_first_a_error_55 = pl.sub(rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_lower_first_sum_minus_z_54)
-            rmsfix_midpoint_sqrt_seed_lower_first_b_error_56 = pl.sub(rmsfix_midpoint_sqrt_seed_z_lo_gap_51, rmsfix_midpoint_sqrt_seed_lower_first_z_53)
-            rmsfix_midpoint_sqrt_seed_e1_57 = pl.add(rmsfix_midpoint_sqrt_seed_lower_first_a_error_55, rmsfix_midpoint_sqrt_seed_lower_first_b_error_56)
+            rmsfix_midpoint_sqrt_seed_rh_45 = pl.add(
+                rmsfix_midpoint_sqrt_seed_residual_input_43, rmsfix_midpoint_sqrt_seed_negative_error_44
+            )
+            rmsfix_midpoint_sqrt_seed_residual_z_46 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_residual_input_43
+            )
+            rmsfix_midpoint_sqrt_seed_residual_sum_minus_z_47 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_residual_z_46
+            )
+            rmsfix_midpoint_sqrt_seed_residual_a_error_48 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_residual_input_43, rmsfix_midpoint_sqrt_seed_residual_sum_minus_z_47
+            )
+            rmsfix_midpoint_sqrt_seed_residual_b_error_49 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_negative_error_44, rmsfix_midpoint_sqrt_seed_residual_z_46
+            )
+            rmsfix_midpoint_sqrt_seed_rl_50 = pl.add(
+                rmsfix_midpoint_sqrt_seed_residual_a_error_48, rmsfix_midpoint_sqrt_seed_residual_b_error_49
+            )
+            rmsfix_midpoint_sqrt_seed_z_lo_gap_51 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_lo_gap_27
+            )
+            rmsfix_midpoint_sqrt_seed_l1_52 = pl.add(
+                rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_z_lo_gap_51
+            )
+            rmsfix_midpoint_sqrt_seed_lower_first_z_53 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_l1_52, rmsfix_midpoint_sqrt_seed_rh_45
+            )
+            rmsfix_midpoint_sqrt_seed_lower_first_sum_minus_z_54 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_l1_52, rmsfix_midpoint_sqrt_seed_lower_first_z_53
+            )
+            rmsfix_midpoint_sqrt_seed_lower_first_a_error_55 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_lower_first_sum_minus_z_54
+            )
+            rmsfix_midpoint_sqrt_seed_lower_first_b_error_56 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_z_lo_gap_51, rmsfix_midpoint_sqrt_seed_lower_first_z_53
+            )
+            rmsfix_midpoint_sqrt_seed_e1_57 = pl.add(
+                rmsfix_midpoint_sqrt_seed_lower_first_a_error_55,
+                rmsfix_midpoint_sqrt_seed_lower_first_b_error_56,
+            )
             rmsfix_midpoint_sqrt_seed_negative_lo_gap_58 = pl.neg(rmsfix_midpoint_sqrt_seed_lo_gap_27)
-            rmsfix_midpoint_sqrt_seed_negative_lo_square_59 = pl.mul(rmsfix_midpoint_sqrt_seed_negative_lo_gap_58, rmsfix_midpoint_sqrt_seed_lo_gap_27)
-            rmsfix_midpoint_sqrt_seed_negative_lo_quarter_square_60 = pl.mul(rmsfix_midpoint_sqrt_seed_negative_lo_square_59, 0.25)
-            rmsfix_midpoint_sqrt_seed_l2_61 = pl.add(rmsfix_midpoint_sqrt_seed_l1_52, rmsfix_midpoint_sqrt_seed_negative_lo_quarter_square_60)
-            rmsfix_midpoint_sqrt_seed_lower_second_z_62 = pl.sub(rmsfix_midpoint_sqrt_seed_l2_61, rmsfix_midpoint_sqrt_seed_l1_52)
-            rmsfix_midpoint_sqrt_seed_lower_second_sum_minus_z_63 = pl.sub(rmsfix_midpoint_sqrt_seed_l2_61, rmsfix_midpoint_sqrt_seed_lower_second_z_62)
-            rmsfix_midpoint_sqrt_seed_lower_second_a_error_64 = pl.sub(rmsfix_midpoint_sqrt_seed_l1_52, rmsfix_midpoint_sqrt_seed_lower_second_sum_minus_z_63)
-            rmsfix_midpoint_sqrt_seed_lower_second_b_error_65 = pl.sub(rmsfix_midpoint_sqrt_seed_negative_lo_quarter_square_60, rmsfix_midpoint_sqrt_seed_lower_second_z_62)
-            rmsfix_midpoint_sqrt_seed_e2_66 = pl.add(rmsfix_midpoint_sqrt_seed_lower_second_a_error_64, rmsfix_midpoint_sqrt_seed_lower_second_b_error_65)
-            rmsfix_midpoint_sqrt_seed_lower_errors_first_67 = pl.add(rmsfix_midpoint_sqrt_seed_e1_57, rmsfix_midpoint_sqrt_seed_rl_50)
-            rmsfix_midpoint_sqrt_seed_lower_errors_68 = pl.add(rmsfix_midpoint_sqrt_seed_lower_errors_first_67, rmsfix_midpoint_sqrt_seed_e2_66)
-            rmsfix_midpoint_sqrt_seed_dlo_69 = pl.add(rmsfix_midpoint_sqrt_seed_l2_61, rmsfix_midpoint_sqrt_seed_lower_errors_68)
+            rmsfix_midpoint_sqrt_seed_negative_lo_square_59 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_negative_lo_gap_58, rmsfix_midpoint_sqrt_seed_lo_gap_27
+            )
+            rmsfix_midpoint_sqrt_seed_negative_lo_quarter_square_60 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_negative_lo_square_59, 0.25
+            )
+            rmsfix_midpoint_sqrt_seed_l2_61 = pl.add(
+                rmsfix_midpoint_sqrt_seed_l1_52, rmsfix_midpoint_sqrt_seed_negative_lo_quarter_square_60
+            )
+            rmsfix_midpoint_sqrt_seed_lower_second_z_62 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_l2_61, rmsfix_midpoint_sqrt_seed_l1_52
+            )
+            rmsfix_midpoint_sqrt_seed_lower_second_sum_minus_z_63 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_l2_61, rmsfix_midpoint_sqrt_seed_lower_second_z_62
+            )
+            rmsfix_midpoint_sqrt_seed_lower_second_a_error_64 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_l1_52, rmsfix_midpoint_sqrt_seed_lower_second_sum_minus_z_63
+            )
+            rmsfix_midpoint_sqrt_seed_lower_second_b_error_65 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_negative_lo_quarter_square_60,
+                rmsfix_midpoint_sqrt_seed_lower_second_z_62,
+            )
+            rmsfix_midpoint_sqrt_seed_e2_66 = pl.add(
+                rmsfix_midpoint_sqrt_seed_lower_second_a_error_64,
+                rmsfix_midpoint_sqrt_seed_lower_second_b_error_65,
+            )
+            rmsfix_midpoint_sqrt_seed_lower_errors_first_67 = pl.add(
+                rmsfix_midpoint_sqrt_seed_e1_57, rmsfix_midpoint_sqrt_seed_rl_50
+            )
+            rmsfix_midpoint_sqrt_seed_lower_errors_68 = pl.add(
+                rmsfix_midpoint_sqrt_seed_lower_errors_first_67, rmsfix_midpoint_sqrt_seed_e2_66
+            )
+            rmsfix_midpoint_sqrt_seed_dlo_69 = pl.add(
+                rmsfix_midpoint_sqrt_seed_l2_61, rmsfix_midpoint_sqrt_seed_lower_errors_68
+            )
             rmsfix_midpoint_sqrt_seed_negative_z_70 = pl.neg(rmsfix_midpoint_sqrt_seed_z_25)
-            rmsfix_midpoint_sqrt_seed_negative_z_hi_gap_71 = pl.mul(rmsfix_midpoint_sqrt_seed_negative_z_70, rmsfix_midpoint_sqrt_seed_hi_gap_29)
-            rmsfix_midpoint_sqrt_seed_h1_72 = pl.add(rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_negative_z_hi_gap_71)
-            rmsfix_midpoint_sqrt_seed_upper_first_z_73 = pl.sub(rmsfix_midpoint_sqrt_seed_h1_72, rmsfix_midpoint_sqrt_seed_rh_45)
-            rmsfix_midpoint_sqrt_seed_upper_first_sum_minus_z_74 = pl.sub(rmsfix_midpoint_sqrt_seed_h1_72, rmsfix_midpoint_sqrt_seed_upper_first_z_73)
-            rmsfix_midpoint_sqrt_seed_upper_first_a_error_75 = pl.sub(rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_upper_first_sum_minus_z_74)
-            rmsfix_midpoint_sqrt_seed_upper_first_b_error_76 = pl.sub(rmsfix_midpoint_sqrt_seed_negative_z_hi_gap_71, rmsfix_midpoint_sqrt_seed_upper_first_z_73)
-            rmsfix_midpoint_sqrt_seed_f1_77 = pl.add(rmsfix_midpoint_sqrt_seed_upper_first_a_error_75, rmsfix_midpoint_sqrt_seed_upper_first_b_error_76)
+            rmsfix_midpoint_sqrt_seed_negative_z_hi_gap_71 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_negative_z_70, rmsfix_midpoint_sqrt_seed_hi_gap_29
+            )
+            rmsfix_midpoint_sqrt_seed_h1_72 = pl.add(
+                rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_negative_z_hi_gap_71
+            )
+            rmsfix_midpoint_sqrt_seed_upper_first_z_73 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_h1_72, rmsfix_midpoint_sqrt_seed_rh_45
+            )
+            rmsfix_midpoint_sqrt_seed_upper_first_sum_minus_z_74 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_h1_72, rmsfix_midpoint_sqrt_seed_upper_first_z_73
+            )
+            rmsfix_midpoint_sqrt_seed_upper_first_a_error_75 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_rh_45, rmsfix_midpoint_sqrt_seed_upper_first_sum_minus_z_74
+            )
+            rmsfix_midpoint_sqrt_seed_upper_first_b_error_76 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_negative_z_hi_gap_71, rmsfix_midpoint_sqrt_seed_upper_first_z_73
+            )
+            rmsfix_midpoint_sqrt_seed_f1_77 = pl.add(
+                rmsfix_midpoint_sqrt_seed_upper_first_a_error_75,
+                rmsfix_midpoint_sqrt_seed_upper_first_b_error_76,
+            )
             rmsfix_midpoint_sqrt_seed_negative_hi_gap_78 = pl.neg(rmsfix_midpoint_sqrt_seed_hi_gap_29)
-            rmsfix_midpoint_sqrt_seed_negative_hi_square_79 = pl.mul(rmsfix_midpoint_sqrt_seed_negative_hi_gap_78, rmsfix_midpoint_sqrt_seed_hi_gap_29)
-            rmsfix_midpoint_sqrt_seed_negative_hi_quarter_square_80 = pl.mul(rmsfix_midpoint_sqrt_seed_negative_hi_square_79, 0.25)
-            rmsfix_midpoint_sqrt_seed_h2_81 = pl.add(rmsfix_midpoint_sqrt_seed_h1_72, rmsfix_midpoint_sqrt_seed_negative_hi_quarter_square_80)
-            rmsfix_midpoint_sqrt_seed_upper_second_z_82 = pl.sub(rmsfix_midpoint_sqrt_seed_h2_81, rmsfix_midpoint_sqrt_seed_h1_72)
-            rmsfix_midpoint_sqrt_seed_upper_second_sum_minus_z_83 = pl.sub(rmsfix_midpoint_sqrt_seed_h2_81, rmsfix_midpoint_sqrt_seed_upper_second_z_82)
-            rmsfix_midpoint_sqrt_seed_upper_second_a_error_84 = pl.sub(rmsfix_midpoint_sqrt_seed_h1_72, rmsfix_midpoint_sqrt_seed_upper_second_sum_minus_z_83)
-            rmsfix_midpoint_sqrt_seed_upper_second_b_error_85 = pl.sub(rmsfix_midpoint_sqrt_seed_negative_hi_quarter_square_80, rmsfix_midpoint_sqrt_seed_upper_second_z_82)
-            rmsfix_midpoint_sqrt_seed_f2_86 = pl.add(rmsfix_midpoint_sqrt_seed_upper_second_a_error_84, rmsfix_midpoint_sqrt_seed_upper_second_b_error_85)
-            rmsfix_midpoint_sqrt_seed_upper_errors_first_87 = pl.add(rmsfix_midpoint_sqrt_seed_f1_77, rmsfix_midpoint_sqrt_seed_rl_50)
-            rmsfix_midpoint_sqrt_seed_upper_errors_88 = pl.add(rmsfix_midpoint_sqrt_seed_upper_errors_first_87, rmsfix_midpoint_sqrt_seed_f2_86)
-            rmsfix_midpoint_sqrt_seed_dhi_89 = pl.add(rmsfix_midpoint_sqrt_seed_h2_81, rmsfix_midpoint_sqrt_seed_upper_errors_88)
+            rmsfix_midpoint_sqrt_seed_negative_hi_square_79 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_negative_hi_gap_78, rmsfix_midpoint_sqrt_seed_hi_gap_29
+            )
+            rmsfix_midpoint_sqrt_seed_negative_hi_quarter_square_80 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_negative_hi_square_79, 0.25
+            )
+            rmsfix_midpoint_sqrt_seed_h2_81 = pl.add(
+                rmsfix_midpoint_sqrt_seed_h1_72, rmsfix_midpoint_sqrt_seed_negative_hi_quarter_square_80
+            )
+            rmsfix_midpoint_sqrt_seed_upper_second_z_82 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_h2_81, rmsfix_midpoint_sqrt_seed_h1_72
+            )
+            rmsfix_midpoint_sqrt_seed_upper_second_sum_minus_z_83 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_h2_81, rmsfix_midpoint_sqrt_seed_upper_second_z_82
+            )
+            rmsfix_midpoint_sqrt_seed_upper_second_a_error_84 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_h1_72, rmsfix_midpoint_sqrt_seed_upper_second_sum_minus_z_83
+            )
+            rmsfix_midpoint_sqrt_seed_upper_second_b_error_85 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_negative_hi_quarter_square_80,
+                rmsfix_midpoint_sqrt_seed_upper_second_z_82,
+            )
+            rmsfix_midpoint_sqrt_seed_f2_86 = pl.add(
+                rmsfix_midpoint_sqrt_seed_upper_second_a_error_84,
+                rmsfix_midpoint_sqrt_seed_upper_second_b_error_85,
+            )
+            rmsfix_midpoint_sqrt_seed_upper_errors_first_87 = pl.add(
+                rmsfix_midpoint_sqrt_seed_f1_77, rmsfix_midpoint_sqrt_seed_rl_50
+            )
+            rmsfix_midpoint_sqrt_seed_upper_errors_88 = pl.add(
+                rmsfix_midpoint_sqrt_seed_upper_errors_first_87, rmsfix_midpoint_sqrt_seed_f2_86
+            )
+            rmsfix_midpoint_sqrt_seed_dhi_89 = pl.add(
+                rmsfix_midpoint_sqrt_seed_h2_81, rmsfix_midpoint_sqrt_seed_upper_errors_88
+            )
             rmsfix_midpoint_sqrt_seed_negative_dlo_90 = pl.neg(rmsfix_midpoint_sqrt_seed_dlo_69)
-            rmsfix_midpoint_sqrt_seed_down_denominator_91 = pl.mul(rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_lo_gap_27)
-            rmsfix_midpoint_sqrt_seed_down_ratio_92 = pl.div(rmsfix_midpoint_sqrt_seed_negative_dlo_90, rmsfix_midpoint_sqrt_seed_down_denominator_91)
-            rmsfix_midpoint_sqrt_seed_down_scaled_93 = pl.mul(rmsfix_midpoint_sqrt_seed_down_ratio_92, 2.0 ** 40)
-            rmsfix_midpoint_sqrt_seed_down_bounded_94 = pl.minimum(rmsfix_midpoint_sqrt_seed_down_scaled_93, 1.0)
-            rmsfix_midpoint_sqrt_seed_down_flag_95 = pl.maximum(rmsfix_midpoint_sqrt_seed_down_bounded_94, 0.0)
-            rmsfix_midpoint_sqrt_seed_up_denominator_96 = pl.mul(rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_hi_gap_29)
-            rmsfix_midpoint_sqrt_seed_up_ratio_97 = pl.div(rmsfix_midpoint_sqrt_seed_dhi_89, rmsfix_midpoint_sqrt_seed_up_denominator_96)
-            rmsfix_midpoint_sqrt_seed_up_scaled_98 = pl.mul(rmsfix_midpoint_sqrt_seed_up_ratio_97, 2.0 ** 40)
+            rmsfix_midpoint_sqrt_seed_down_denominator_91 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_lo_gap_27
+            )
+            rmsfix_midpoint_sqrt_seed_down_ratio_92 = pl.div(
+                rmsfix_midpoint_sqrt_seed_negative_dlo_90, rmsfix_midpoint_sqrt_seed_down_denominator_91
+            )
+            rmsfix_midpoint_sqrt_seed_down_scaled_93 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_down_ratio_92, 2.0**40
+            )
+            rmsfix_midpoint_sqrt_seed_down_bounded_94 = pl.minimum(
+                rmsfix_midpoint_sqrt_seed_down_scaled_93, 1.0
+            )
+            rmsfix_midpoint_sqrt_seed_down_flag_95 = pl.maximum(
+                rmsfix_midpoint_sqrt_seed_down_bounded_94, 0.0
+            )
+            rmsfix_midpoint_sqrt_seed_up_denominator_96 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_z_25, rmsfix_midpoint_sqrt_seed_hi_gap_29
+            )
+            rmsfix_midpoint_sqrt_seed_up_ratio_97 = pl.div(
+                rmsfix_midpoint_sqrt_seed_dhi_89, rmsfix_midpoint_sqrt_seed_up_denominator_96
+            )
+            rmsfix_midpoint_sqrt_seed_up_scaled_98 = pl.mul(rmsfix_midpoint_sqrt_seed_up_ratio_97, 2.0**40)
             rmsfix_midpoint_sqrt_seed_up_bounded_99 = pl.minimum(rmsfix_midpoint_sqrt_seed_up_scaled_98, 1.0)
             rmsfix_midpoint_sqrt_seed_up_flag_100 = pl.maximum(rmsfix_midpoint_sqrt_seed_up_bounded_99, 0.0)
-            rmsfix_midpoint_sqrt_seed_lower_difference_101 = pl.sub(rmsfix_midpoint_sqrt_seed_lower_23, rmsfix_newton_sqrt_seed_result_20)
-            rmsfix_midpoint_sqrt_seed_down_adjustment_102 = pl.mul(rmsfix_midpoint_sqrt_seed_down_flag_95, rmsfix_midpoint_sqrt_seed_lower_difference_101)
-            rmsfix_midpoint_sqrt_seed_first_result_103 = pl.add(rmsfix_newton_sqrt_seed_result_20, rmsfix_midpoint_sqrt_seed_down_adjustment_102)
-            rmsfix_midpoint_sqrt_seed_upper_difference_104 = pl.sub(rmsfix_midpoint_sqrt_seed_upper_24, rmsfix_newton_sqrt_seed_result_20)
-            rmsfix_midpoint_sqrt_seed_up_adjustment_105 = pl.mul(rmsfix_midpoint_sqrt_seed_up_flag_100, rmsfix_midpoint_sqrt_seed_upper_difference_104)
-            rmsfix_midpoint_sqrt_seed_result_106 = pl.add(rmsfix_midpoint_sqrt_seed_first_result_103, rmsfix_midpoint_sqrt_seed_up_adjustment_105)
+            rmsfix_midpoint_sqrt_seed_lower_difference_101 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_lower_23, rmsfix_newton_sqrt_seed_result_20
+            )
+            rmsfix_midpoint_sqrt_seed_down_adjustment_102 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_down_flag_95, rmsfix_midpoint_sqrt_seed_lower_difference_101
+            )
+            rmsfix_midpoint_sqrt_seed_first_result_103 = pl.add(
+                rmsfix_newton_sqrt_seed_result_20, rmsfix_midpoint_sqrt_seed_down_adjustment_102
+            )
+            rmsfix_midpoint_sqrt_seed_upper_difference_104 = pl.sub(
+                rmsfix_midpoint_sqrt_seed_upper_24, rmsfix_newton_sqrt_seed_result_20
+            )
+            rmsfix_midpoint_sqrt_seed_up_adjustment_105 = pl.mul(
+                rmsfix_midpoint_sqrt_seed_up_flag_100, rmsfix_midpoint_sqrt_seed_upper_difference_104
+            )
+            rmsfix_midpoint_sqrt_seed_result_106 = pl.add(
+                rmsfix_midpoint_sqrt_seed_first_result_103, rmsfix_midpoint_sqrt_seed_up_adjustment_105
+            )
             rmsfix_q_rms_reciprocal_eft_result_107 = rmsfix_midpoint_sqrt_seed_result_106
-            rmsfix_q_rms_reciprocal_eft_ones_row_108 = pl.set_validshape(pl.tile.full([1, ROW_PAD], dtype=pl.FP32, value=1.0), 1, 1)
+            rmsfix_q_rms_reciprocal_eft_ones_row_108 = pl.set_validshape(
+                pl.tile.full([1, ROW_PAD], dtype=pl.FP32, value=1.0), 1, 1
+            )
             rmsfix_q_rms_reciprocal_eft_ef_work_109 = pl.mul(rmsfix_midpoint_sqrt_seed_result_106, 65536.0)
-            rmsfix_q_rms_reciprocal_eft_ef_estimate_110 = pl.div(rmsfix_q_rms_reciprocal_eft_ones_row_108, rmsfix_q_rms_reciprocal_eft_ef_work_109)
-            rmsfix_q_rms_reciprocal_eft_ef_left_split_111 = pl.mul(rmsfix_q_rms_reciprocal_eft_ef_estimate_110, 4097.0)
-            rmsfix_q_rms_reciprocal_eft_ef_left_delta_112 = pl.sub(rmsfix_q_rms_reciprocal_eft_ef_left_split_111, rmsfix_q_rms_reciprocal_eft_ef_estimate_110)
-            rmsfix_q_rms_reciprocal_eft_ef_left_hi_113 = pl.sub(rmsfix_q_rms_reciprocal_eft_ef_left_split_111, rmsfix_q_rms_reciprocal_eft_ef_left_delta_112)
-            rmsfix_q_rms_reciprocal_eft_ef_left_lo_114 = pl.sub(rmsfix_q_rms_reciprocal_eft_ef_estimate_110, rmsfix_q_rms_reciprocal_eft_ef_left_hi_113)
-            rmsfix_q_rms_reciprocal_eft_ef_right_split_115 = pl.mul(rmsfix_q_rms_reciprocal_eft_ef_work_109, 4097.0)
-            rmsfix_q_rms_reciprocal_eft_ef_right_delta_116 = pl.sub(rmsfix_q_rms_reciprocal_eft_ef_right_split_115, rmsfix_q_rms_reciprocal_eft_ef_work_109)
-            rmsfix_q_rms_reciprocal_eft_ef_right_hi_117 = pl.sub(rmsfix_q_rms_reciprocal_eft_ef_right_split_115, rmsfix_q_rms_reciprocal_eft_ef_right_delta_116)
-            rmsfix_q_rms_reciprocal_eft_ef_right_lo_118 = pl.sub(rmsfix_q_rms_reciprocal_eft_ef_work_109, rmsfix_q_rms_reciprocal_eft_ef_right_hi_117)
-            rmsfix_q_rms_reciprocal_eft_ef_product_119 = pl.mul(rmsfix_q_rms_reciprocal_eft_ef_estimate_110, rmsfix_q_rms_reciprocal_eft_ef_work_109)
-            rmsfix_q_rms_reciprocal_eft_ef_hi_product_120 = pl.mul(rmsfix_q_rms_reciprocal_eft_ef_left_hi_113, rmsfix_q_rms_reciprocal_eft_ef_right_hi_117)
-            rmsfix_q_rms_reciprocal_eft_ef_error_121 = pl.sub(rmsfix_q_rms_reciprocal_eft_ef_hi_product_120, rmsfix_q_rms_reciprocal_eft_ef_product_119)
-            rmsfix_q_rms_reciprocal_eft_ef_hi_lo_122 = pl.mul(rmsfix_q_rms_reciprocal_eft_ef_left_hi_113, rmsfix_q_rms_reciprocal_eft_ef_right_lo_118)
-            rmsfix_q_rms_reciprocal_eft_ef_error_123 = pl.add(rmsfix_q_rms_reciprocal_eft_ef_error_121, rmsfix_q_rms_reciprocal_eft_ef_hi_lo_122)
-            rmsfix_q_rms_reciprocal_eft_ef_lo_hi_124 = pl.mul(rmsfix_q_rms_reciprocal_eft_ef_left_lo_114, rmsfix_q_rms_reciprocal_eft_ef_right_hi_117)
-            rmsfix_q_rms_reciprocal_eft_ef_error_125 = pl.add(rmsfix_q_rms_reciprocal_eft_ef_error_123, rmsfix_q_rms_reciprocal_eft_ef_lo_hi_124)
-            rmsfix_q_rms_reciprocal_eft_ef_lo_product_126 = pl.mul(rmsfix_q_rms_reciprocal_eft_ef_left_lo_114, rmsfix_q_rms_reciprocal_eft_ef_right_lo_118)
-            rmsfix_q_rms_reciprocal_eft_ef_error_127 = pl.add(rmsfix_q_rms_reciprocal_eft_ef_error_125, rmsfix_q_rms_reciprocal_eft_ef_lo_product_126)
-            rmsfix_q_rms_reciprocal_eft_ef_residual_hi_128 = pl.sub(rmsfix_q_rms_reciprocal_eft_ones_row_108, rmsfix_q_rms_reciprocal_eft_ef_product_119)
-            rmsfix_q_rms_reciprocal_eft_ef_residual_129 = pl.sub(rmsfix_q_rms_reciprocal_eft_ef_residual_hi_128, rmsfix_q_rms_reciprocal_eft_ef_error_127)
-            rmsfix_q_rms_reciprocal_eft_ef_correction_130 = pl.div(rmsfix_q_rms_reciprocal_eft_ef_residual_129, rmsfix_q_rms_reciprocal_eft_ef_work_109)
-            rmsfix_q_rms_reciprocal_eft_ef_corrected_work_131 = pl.add(rmsfix_q_rms_reciprocal_eft_ef_estimate_110, rmsfix_q_rms_reciprocal_eft_ef_correction_130)
-            rmsfix_q_rms_reciprocal_eft_result_132 = pl.mul(rmsfix_q_rms_reciprocal_eft_ef_corrected_work_131, 65536.0)
+            rmsfix_q_rms_reciprocal_eft_ef_estimate_110 = pl.div(
+                rmsfix_q_rms_reciprocal_eft_ones_row_108, rmsfix_q_rms_reciprocal_eft_ef_work_109
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_left_split_111 = pl.mul(
+                rmsfix_q_rms_reciprocal_eft_ef_estimate_110, 4097.0
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_left_delta_112 = pl.sub(
+                rmsfix_q_rms_reciprocal_eft_ef_left_split_111, rmsfix_q_rms_reciprocal_eft_ef_estimate_110
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_left_hi_113 = pl.sub(
+                rmsfix_q_rms_reciprocal_eft_ef_left_split_111, rmsfix_q_rms_reciprocal_eft_ef_left_delta_112
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_left_lo_114 = pl.sub(
+                rmsfix_q_rms_reciprocal_eft_ef_estimate_110, rmsfix_q_rms_reciprocal_eft_ef_left_hi_113
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_right_split_115 = pl.mul(
+                rmsfix_q_rms_reciprocal_eft_ef_work_109, 4097.0
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_right_delta_116 = pl.sub(
+                rmsfix_q_rms_reciprocal_eft_ef_right_split_115, rmsfix_q_rms_reciprocal_eft_ef_work_109
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_right_hi_117 = pl.sub(
+                rmsfix_q_rms_reciprocal_eft_ef_right_split_115, rmsfix_q_rms_reciprocal_eft_ef_right_delta_116
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_right_lo_118 = pl.sub(
+                rmsfix_q_rms_reciprocal_eft_ef_work_109, rmsfix_q_rms_reciprocal_eft_ef_right_hi_117
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_product_119 = pl.mul(
+                rmsfix_q_rms_reciprocal_eft_ef_estimate_110, rmsfix_q_rms_reciprocal_eft_ef_work_109
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_hi_product_120 = pl.mul(
+                rmsfix_q_rms_reciprocal_eft_ef_left_hi_113, rmsfix_q_rms_reciprocal_eft_ef_right_hi_117
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_error_121 = pl.sub(
+                rmsfix_q_rms_reciprocal_eft_ef_hi_product_120, rmsfix_q_rms_reciprocal_eft_ef_product_119
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_hi_lo_122 = pl.mul(
+                rmsfix_q_rms_reciprocal_eft_ef_left_hi_113, rmsfix_q_rms_reciprocal_eft_ef_right_lo_118
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_error_123 = pl.add(
+                rmsfix_q_rms_reciprocal_eft_ef_error_121, rmsfix_q_rms_reciprocal_eft_ef_hi_lo_122
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_lo_hi_124 = pl.mul(
+                rmsfix_q_rms_reciprocal_eft_ef_left_lo_114, rmsfix_q_rms_reciprocal_eft_ef_right_hi_117
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_error_125 = pl.add(
+                rmsfix_q_rms_reciprocal_eft_ef_error_123, rmsfix_q_rms_reciprocal_eft_ef_lo_hi_124
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_lo_product_126 = pl.mul(
+                rmsfix_q_rms_reciprocal_eft_ef_left_lo_114, rmsfix_q_rms_reciprocal_eft_ef_right_lo_118
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_error_127 = pl.add(
+                rmsfix_q_rms_reciprocal_eft_ef_error_125, rmsfix_q_rms_reciprocal_eft_ef_lo_product_126
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_residual_hi_128 = pl.sub(
+                rmsfix_q_rms_reciprocal_eft_ones_row_108, rmsfix_q_rms_reciprocal_eft_ef_product_119
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_residual_129 = pl.sub(
+                rmsfix_q_rms_reciprocal_eft_ef_residual_hi_128, rmsfix_q_rms_reciprocal_eft_ef_error_127
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_correction_130 = pl.div(
+                rmsfix_q_rms_reciprocal_eft_ef_residual_129, rmsfix_q_rms_reciprocal_eft_ef_work_109
+            )
+            rmsfix_q_rms_reciprocal_eft_ef_corrected_work_131 = pl.add(
+                rmsfix_q_rms_reciprocal_eft_ef_estimate_110, rmsfix_q_rms_reciprocal_eft_ef_correction_130
+            )
+            rmsfix_q_rms_reciprocal_eft_result_132 = pl.mul(
+                rmsfix_q_rms_reciprocal_eft_ef_corrected_work_131, 65536.0
+            )
             rmsfix_zero = pl.sub(rmsfix_safe_var, rmsfix_safe_var)
             rmsfix_one = pl.add(rmsfix_zero, 1.0)
-            rmsfix_lower = pl.minimum(pl.maximum(pl.mul(pl.sub(rmsfix_variance, 9.094946475628196e-13), 2.0 ** 64), 0.0), 1.0)
+            rmsfix_lower = pl.minimum(
+                pl.maximum(pl.mul(pl.sub(rmsfix_variance, 9.094946475628196e-13), 2.0**64), 0.0), 1.0
+            )
             rmsfix_upper_boundary = pl.add(rmsfix_zero, 1099511758848.0)
-            rmsfix_upper = pl.minimum(pl.maximum(pl.mul(pl.sub(rmsfix_upper_boundary, rmsfix_variance), 2.0 ** -17), 0.0), 1.0)
+            rmsfix_upper = pl.minimum(
+                pl.maximum(pl.mul(pl.sub(rmsfix_upper_boundary, rmsfix_variance), 2.0**-17), 0.0), 1.0
+            )
             rmsfix_in_range = pl.mul(rmsfix_lower, rmsfix_upper)
             rmsfix_corrected_inv = pl.mul(rmsfix_q_rms_reciprocal_eft_result_132, rmsfix_in_range)
             rmsfix_other = pl.sub(rmsfix_one, rmsfix_in_range)
@@ -298,9 +537,9 @@ def gate(
             scale_max = pl.tile.full([1, ROW_PAD], dtype=pl.FP32, value=INT8_SCALE_MAX)
             scale_max = pl.set_validshape(scale_max, 1, 1)
             # Power-of-two normalization: (127 / (b * factor)) * factor = 127 / b.
-            xg_div_threshold = pl.tile.full([1, ROW_PAD], dtype=pl.FP32, value=2.0 ** 64)
+            xg_div_threshold = pl.tile.full([1, ROW_PAD], dtype=pl.FP32, value=2.0**64)
             xg_div_threshold = pl.set_validshape(xg_div_threshold, 1, 1)
-            xg_div_down = pl.tile.full([1, ROW_PAD], dtype=pl.FP32, value=2.0 ** -64)
+            xg_div_down = pl.tile.full([1, ROW_PAD], dtype=pl.FP32, value=2.0**-64)
             xg_div_down = pl.set_validshape(xg_div_down, 1, 1)
             xg_div_one = pl.tile.full([1, ROW_PAD], dtype=pl.FP32, value=1.0)
             xg_div_one = pl.set_validshape(xg_div_one, 1, 1)
@@ -350,21 +589,25 @@ def gate(
             deps=[seed_dummy],
             allow_early_resolve=True,
         ):
-            xn_sq_col = xn_scale_buf[t0 : t0 + T_TILE, 0:1]
+            quant_rows = pl.min(T_TILE, active_gate_tokens - t0)
+            xn_sq_col = pl.slice(xn_scale_buf, [T_TILE, 1], [t0, 0], valid_shape=[quant_rows, 1])
             for xq_b_k in pl.pipeline(0, D, QUANT_TILE, stage=2):
-                xn_q_scaled = pl.row_expand_mul(
-                    xg_buf[t0 : t0 + T_TILE, xq_b_k : xq_b_k + QUANT_TILE],
-                    xn_sq_col,
+                xn_input = pl.slice(
+                    xg_buf, [T_TILE, QUANT_TILE], [t0, xq_b_k], valid_shape=[quant_rows, QUANT_TILE]
                 )
+                xn_q_scaled = pl.row_expand_mul(xn_input, xn_sq_col)
                 xn_q_i32 = pl.cast(xn_q_scaled, pl.INT32, mode="rint")
                 xn_q_half = pl.cast(xn_q_i32, pl.FP16, mode="round")
-                x_norm_i8[t0 : t0 + T_TILE, xq_b_k : xq_b_k + QUANT_TILE] = \
-                    pl.cast(xn_q_half, pl.INT8, mode="trunc", saturation_mode="on")
+                xn_q_i8 = pl.cast(xn_q_half, pl.INT8, mode="trunc", saturation_mode="on")
+                xn_q_valid = pl.set_validshape(xn_q_i8, quant_rows, QUANT_TILE)
+                x_norm_i8[t0 : t0 + T_TILE, xq_b_k : xq_b_k + QUANT_TILE] = xn_q_valid
 
     gate_logits_buf = pl.create_tensor([T_PAD, SCORE_PAD], dtype=pl.FP32)
     GATE_N_BLOCKS = N_EXPERTS // GATE_N_TILE
     if active_gate_tiles > 0:
-        for gb_idx in pl.spmd(active_gate_tiles * GATE_N_BLOCKS, name_hint="gate_mm", allow_early_resolve=True):
+        for gb_idx in pl.spmd(
+            active_gate_tiles * GATE_N_BLOCKS, name_hint="gate_mm", allow_early_resolve=True
+        ):
             tg = gb_idx // GATE_N_BLOCKS
             nb = gb_idx % GATE_N_BLOCKS
             t1 = tg * GATE_M_TILE
@@ -374,7 +617,9 @@ def gate(
                 gd_kd = kb * GATE_D_TILE
                 gd_x = xg_buf[t1 : t1 + GATE_M_TILE, gd_kd : gd_kd + GATE_D_TILE]
                 gd_w = gate_w[n0 : n0 + GATE_N_TILE, gd_kd : gd_kd + GATE_D_TILE]
-                gate_logits_tile = pl.matmul_acc(gate_logits_tile, gd_x, gd_w, b_trans=True, init_cond=(kb == 0))
+                gate_logits_tile = pl.matmul_acc(
+                    gate_logits_tile, gd_x, gd_w, b_trans=True, init_cond=(kb == 0)
+                )
             gate_logits_buf[t1 : t1 + GATE_M_TILE, n0 : n0 + GATE_N_TILE] = gate_logits_tile
 
     active_route_tiles = (active_tokens + GATE_T_TILE - 1) // GATE_T_TILE
@@ -389,7 +634,9 @@ def gate(
                 gp_score = _router_scores(route_logits)
                 # Load the selected expert row into an aligned UB tile.
                 hs_token = pl.cast(pl.read(input_ids, [t1]), pl.INDEX)
-                hs_idx_tile = pl.slice(tid2eid, [GATE_T_TILE, TOPK_PAD], [hs_token, 0], valid_shape=[GATE_T_TILE, TOPK])
+                hs_idx_tile = pl.slice(
+                    tid2eid, [GATE_T_TILE, TOPK_PAD], [hs_token, 0], valid_shape=[GATE_T_TILE, TOPK]
+                )
                 # Normalize only the selected scores.
                 gather_all = pl.gather(gp_score, dim=-1, index=hs_idx_tile)
                 hs_reduce = pl.create_tensor([ROW_PAD, TOPK_PAD], dtype=pl.FP32)
@@ -501,7 +748,11 @@ def _gate_rms_square_sum(x_f):
 
 def golden_gate_core(tensors):
     import torch
-    from utils import fp32_matmul_fp32
+
+    if __package__:
+        from .utils import fp32_matmul_fp32
+    else:
+        from utils import fp32_matmul_fp32
 
     num_tokens = max(0, min(T, int(tensors.get("num_tokens", T))))
 
@@ -518,7 +769,7 @@ def golden_gate_core(tensors):
     # Symmetric INT8 quant of xg: inv_rms cancels in the int8 values (a positive
     # per-token scalar), so it rides only the dequant scale.
     x_norm_i8, scale_dq_g = _per_token_int8_quant(xg)
-    x_norm_scale = scale_dq_g.reshape(T, 1) * inv_rms   # inv_rms * amax(xg)/127
+    x_norm_scale = scale_dq_g.reshape(T, 1) * inv_rms  # inv_rms * amax(xg)/127
 
     # Match the stored FP32 operands and operation order at every unary boundary.
     # Evaluate unary functions in FP64 before rounding their results to FP32.

@@ -31,29 +31,29 @@ def read(path):
 
 
 def build_package(generated_report, output, *, jobs=32):
-    from models.deepseek_v4_flash_dspark_bs1.build import source_manifest
+    from models.deepseek_v4_flash_lowlat.build import source_manifest
     from pypto.jit._artifact_manifest import BuildKind
     from pypto.runtime._prebuilt import prepare_prebuilt, read_prebuilt
     from pypto.runtime import device_runner
 
     report = read(generated_report)
-    if not report['status'].startswith(('GENERATED_', 'PASS_ACTUAL_PUBLIC_PR_GENERATED_')):
-        raise ValueError('Successful actual source generation is required')
-    if source_manifest() != report['sources']:
-        raise ValueError('Model source differs from the generated program')
-    source = Path(report['artifact_dir']).resolve()
-    if sha(source / 'distributed_meta.json') != report['metadata_sha256']:
-        raise ValueError('Generated public metadata changed')
+    if not report["status"].startswith(("GENERATED_", "PASS_ACTUAL_PUBLIC_PR_GENERATED_")):
+        raise ValueError("Successful actual source generation is required")
+    if source_manifest() != report["sources"]:
+        raise ValueError("Model source differs from the generated program")
+    source = Path(report["artifact_dir"]).resolve()
+    if sha(source / "distributed_meta.json") != report["metadata_sha256"]:
+        raise ValueError("Generated public metadata changed")
     output = Path(output).resolve()
     if output.exists():
-        raise FileExistsError('Preserve the existing native build instead of overwriting it')
+        raise FileExistsError("Preserve the existing native build instead of overwriting it")
     shutil.copytree(source, output)
     # An immutable cache inventory belongs to its original source directory,
     # not this explicit mutable native-build copy.
-    (output / 'artifact_manifest.json').unlink(missing_ok=True)
+    (output / "artifact_manifest.json").unlink(missing_ok=True)
     started = time.monotonic()
     if type(jobs) is not int or not 1 <= jobs <= 64:
-        raise ValueError('Native compilation requires between one and 64 jobs')
+        raise ValueError("Native compilation requires between one and 64 jobs")
     executor = device_runner.ThreadPoolExecutor
 
     def bounded_executor(max_workers=None, *args, **kwargs):
@@ -61,41 +61,51 @@ def build_package(generated_report, output, *, jobs=32):
 
     device_runner.ThreadPoolExecutor = bounded_executor
     try:
-        prepare_prebuilt(output, 'a2a3', BuildKind.DISTRIBUTED)
+        prepare_prebuilt(output, "a2a3", BuildKind.DISTRIBUTED)
     finally:
         device_runner.ThreadPoolExecutor = executor
-    actual = read_prebuilt(output, 'a2a3', BuildKind.DISTRIBUTED)
-    expected = {'l2_decode_fwd'} if report['profile'] == 'single' else {'l2_full_cycles', 'l2_s6_cycles_only'}
+    actual = read_prebuilt(output, "a2a3", BuildKind.DISTRIBUTED)
+    expected = {"l2_decode_fwd"} if report["profile"] == "single" else {"l2_full_cycles", "l2_s6_cycles_only"}
     if set(actual) != expected:
-        raise RuntimeError('Native package role contract changed')
-    inventory = {str(p.relative_to(output)): sha(p) for p in sorted(output.rglob('*')) if p.is_file()}
+        raise RuntimeError("Native package role contract changed")
+    inventory = {str(p.relative_to(output)): sha(p) for p in sorted(output.rglob("*")) if p.is_file()}
     manifest = dict(
-        schema=1, status='NATIVE_BUILT_NOT_MODEL_TESTED', profile=report['profile'],
-        public_parameters=report['public_parameters'], sources=report['sources'],
-        metadata_sha256=report['metadata_sha256'], files=inventory,
-        generated_report_sha256=sha(generated_report), native_seconds=time.monotonic() - started,
-        compiler_owned_binaries=True, old_binary_reuse=False, Worker=0, NPU=0,
-        official_JIT_READY=False, numerical_qualification=False, performance_qualification=False,
+        schema=1,
+        status="NATIVE_BUILT_NOT_MODEL_TESTED",
+        profile=report["profile"],
+        public_parameters=report["public_parameters"],
+        sources=report["sources"],
+        metadata_sha256=report["metadata_sha256"],
+        files=inventory,
+        generated_report_sha256=sha(generated_report),
+        native_seconds=time.monotonic() - started,
+        compiler_owned_binaries=True,
+        old_binary_reuse=False,
+        Worker=0,
+        NPU=0,
+        official_JIT_READY=False,
+        numerical_qualification=False,
+        performance_qualification=False,
     )
-    (output / 'native-package.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    (output / "native-package.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest
 
 
 def validate_package(directory):
-    from models.deepseek_v4_flash_dspark_bs1.build import source_manifest
+    from models.deepseek_v4_flash_lowlat.build import source_manifest
 
     directory = Path(directory).resolve()
-    manifest = read(directory / 'native-package.json')
-    if manifest['status'] != 'NATIVE_BUILT_NOT_MODEL_TESTED' or manifest['official_JIT_READY']:
-        raise ValueError('Explicit source-native package required')
-    if (directory / 'artifact_manifest.json').exists():
-        raise ValueError('A private native package must not impersonate a JIT cache artifact')
-    if source_manifest() != manifest['sources']:
-        raise ValueError('Native package was built from different model source')
-    for name, digest in manifest['files'].items():
+    manifest = read(directory / "native-package.json")
+    if manifest["status"] != "NATIVE_BUILT_NOT_MODEL_TESTED" or manifest["official_JIT_READY"]:
+        raise ValueError("Explicit source-native package required")
+    if (directory / "artifact_manifest.json").exists():
+        raise ValueError("A private native package must not impersonate a JIT cache artifact")
+    if source_manifest() != manifest["sources"]:
+        raise ValueError("Native package was built from different model source")
+    for name, digest in manifest["files"].items():
         path = Path(name)
-        if path.is_absolute() or '..' in path.parts or sha(directory / path) != digest:
-            raise ValueError('Native package file changed: ' + name)
+        if path.is_absolute() or ".." in path.parts or sha(directory / path) != digest:
+            raise ValueError("Native package file changed: " + name)
     return manifest
 
 

@@ -15,8 +15,14 @@ import sys as _sys
 import pypto.language as pl
 import pypto.language.distributed as pld
 
-from config import FLASH as M, INT8_SCALE_MAX, INT8_AMAX_EPS, _parse_int_argv
-from decode_shapes import DECODE_BATCH, DECODE_SEQ, TP
+if __package__:
+    from .config import FLASH as M, INT8_SCALE_MAX, INT8_AMAX_EPS, _parse_int_argv
+else:
+    from config import FLASH as M, INT8_SCALE_MAX, INT8_AMAX_EPS, _parse_int_argv
+if __package__:
+    from .decode_shapes import DECODE_BATCH, DECODE_SEQ, TP
+else:
+    from decode_shapes import DECODE_BATCH, DECODE_SEQ, TP
 
 
 # model config
@@ -110,6 +116,12 @@ QUANT_ROW_TILE = max(8, T)
 
 assert O_GROUPS == N_RANKS, f"TP-by-group needs one group per rank: O_GROUPS={O_GROUPS}, TP={N_RANKS}"
 
+
+SCALE_LANE_ROWS = N_RANKS * T
+SCALE_WINDOW_ROWS = 2 * SCALE_LANE_ROWS
+
+
+OPROJ_SCALE_ROWS = SCALE_WINDOW_ROWS
 
 @pl.jit.inline
 def _evict_l2(
@@ -283,7 +295,7 @@ def o_proj_tp_core(
     wo_b_scale: pl.Tensor[[D], pl.FP32],
     attn_out: pl.Tensor[[T, D], pl.BF16],
     reduce_window: pld.DistributedTensor[[REDUCE_WINDOW_ROWS, D], pl.FP32],
-
+    scale_window: pld.DistributedTensor[[SCALE_WINDOW_ROWS, 1], pl.FP32],
     reduce_signal: pld.DistributedTensor[[N_RANKS, 1], pl.INT32],
     sync_signal: pld.DistributedTensor[[N_RANKS, 1], pl.INT32],
     my_rank: pl.Scalar[pl.INT32],
@@ -296,8 +308,7 @@ def o_proj_tp_core(
     The dequantized partial is published as FP32 rather than the INT32 accumulator
     because each group carries its own activation scale, which cannot factor out
     of the cross-rank sum. `wo_b_scale` is a shared per-channel factor and is
-    applied during dequantization before publication. It distributes over the
-    sum, but FP32 rounding can differ from a sum-then-scale reference.
+    applied once, after the sum, so the arithmetic matches a single card's g loop.
     """
     o_r_pad = pl.create_tensor([T_PAD, O_LORA], dtype=pl.FP32)
     o_r_i8_pad = pl.create_tensor([T_PAD, O_LORA], dtype=pl.INT8)
@@ -307,7 +318,9 @@ def o_proj_tp_core(
     barrier_out = pl.array.create(1, pl.TASK_ID)
 
     lane_base = pl.cast(((oproj_epoch - 1) % 2) * REDUCE_LANE_ROWS, pl.INDEX)
+    scale_lane_base = pl.cast(((oproj_epoch - 1) % 2) * SCALE_LANE_ROWS, pl.INDEX)
     my_row = lane_base + pl.cast(my_rank, pl.INDEX) * T_PAD
+    my_scale_row = scale_lane_base + pl.cast(my_rank, pl.INDEX) * T
     row_base_o = pl.cast(my_rank, pl.INDEX) * T
     wo_b_scale_2d = pl.reshape(wo_b_scale, [1, D])
 
@@ -369,7 +382,9 @@ def o_proj_tp_core(
                     p_scale = pl.read(act_scale_col, [row, 0])
                     partial_row = p_f32[row : row + 1, :]
                     scaled_row = pl.mul(partial_row, p_scale)
-                    channel_row = pl.col_expand_mul(scaled_row, wo_b_scale_2d[0:1, dq0 : dq0 + DEQUANT_N_TILE])
+                    channel_row = pl.col_expand_mul(
+                        scaled_row, wo_b_scale_2d[0:1, dq0 : dq0 + DEQUANT_N_TILE]
+                    )
                     part_f32[row : row + 1, dq0 : dq0 + DEQUANT_N_TILE] = channel_row
             else:
                 p_act = pl.row_expand_mul(p_f32, act_scale_col[0:T, 0:1])
@@ -466,7 +481,7 @@ def o_proj_tp(
     l2_evict_sink: pl.Tensor[[EVICT_BLOCKS, EVICT_CHUNK], pl.INT8],
     attn_out: pl.Tensor[[T, D], pl.BF16],
     reduce_window: pld.DistributedTensor[[REDUCE_WINDOW_ROWS, D], pl.FP32],
-
+    scale_window: pld.DistributedTensor[[OPROJ_SCALE_ROWS, 1], pl.FP32],
     reduce_signal: pld.DistributedTensor[[N_RANKS, 1], pl.INT32],
     sync_signal: pld.DistributedTensor[[N_RANKS, 1], pl.INT32],
     my_rank: pl.Scalar[pl.INT32],
@@ -482,7 +497,7 @@ def o_proj_tp(
         wo_b_scale,
         attn_out,
         reduce_window,
-
+        scale_window,
         reduce_signal,
         sync_signal,
         my_rank,
@@ -503,27 +518,13 @@ def o_proj_tp_test(
     l2_evict_sink: pl.Tensor[[EVICT_BLOCKS, EVICT_CHUNK], pl.INT8],
     attn_out: pl.Out[pl.Tensor[[T, D], pl.BF16]],
     reduce_window: pld.DistributedTensor[[REDUCE_WINDOW_ROWS, D], pl.FP32],
-
+    scale_window: pld.DistributedTensor[[OPROJ_SCALE_ROWS, 1], pl.FP32],
     reduce_signal: pld.DistributedTensor[[N_RANKS, 1], pl.INT32],
     sync_signal: pld.DistributedTensor[[N_RANKS, 1], pl.INT32],
     my_rank: pl.Scalar[pl.INT32],
     oproj_epoch: pl.Scalar[pl.INT32],
 ):
-    return o_proj_tp(
-        o_packed,
-        wo_a_shard,
-        wo_b_shard,
-        wo_b_scale,
-        l2_evict,
-        l2_evict_sink,
-        attn_out,
-        reduce_window,
-
-        reduce_signal,
-        sync_signal,
-        my_rank,
-        oproj_epoch,
-    )
+    return o_proj_tp(o_packed, wo_a_shard, wo_b_shard, wo_b_scale, l2_evict, l2_evict_sink, attn_out, reduce_window, scale_window, reduce_signal, sync_signal, my_rank, oproj_epoch)
 
 
 @pl.jit.host
@@ -537,29 +538,15 @@ def l3_o_proj_tp(
     attn_out: pl.Out[pl.Tensor[[N_RANKS, T, D], pl.BF16]],
 ):
     reduce_window_buf = pld.alloc_window_buffer([REDUCE_WINDOW_ROWS, D], dtype=pl.FP32)
+    scale_window_buf = pld.alloc_window_buffer([OPROJ_SCALE_ROWS, 1], dtype=pl.FP32)
     reduce_signal_buf = pld.alloc_window_buffer([N_RANKS, 1], dtype=pl.INT32)
     sync_signal_buf = pld.alloc_window_buffer([N_RANKS, 1], dtype=pl.INT32)
-
     for r in pl.range(pld.world_size()):
         reduce_window = pld.window(reduce_window_buf, [REDUCE_WINDOW_ROWS, D], dtype=pl.FP32)
+        scale_window = pld.window(scale_window_buf, [OPROJ_SCALE_ROWS, 1], dtype=pl.FP32)
         reduce_signal = pld.window(reduce_signal_buf, [N_RANKS, 1], dtype=pl.INT32)
         sync_signal = pld.window(sync_signal_buf, [N_RANKS, 1], dtype=pl.INT32)
-        o_proj_tp_test(
-            o_packed[r],
-            wo_a_shard[r],
-            wo_b_shard[r],
-            wo_b_scale[r],
-            l2_evict[r],
-            l2_evict_sink[r],
-            attn_out[r],
-            reduce_window,
-
-            reduce_signal,
-            sync_signal,
-            r,
-            FIRST_EPOCH,
-            device=r,
-        )
+        o_proj_tp_test(o_packed[r], wo_a_shard[r], wo_b_shard[r], wo_b_scale[r], l2_evict[r], l2_evict_sink[r], attn_out[r], reduce_window, scale_window, reduce_signal, sync_signal, r, FIRST_EPOCH, device=r)
 
 
 @pl.jit
@@ -574,22 +561,41 @@ def o_proj_tp_reuse_test(
     attn_out: pl.Out[pl.Tensor[[T, D], pl.BF16]],
     attn_out_epoch2: pl.Out[pl.Tensor[[T, D], pl.BF16]],
     reduce_window: pld.DistributedTensor[[REDUCE_WINDOW_ROWS, D], pl.FP32],
+    scale_window: pld.DistributedTensor[[OPROJ_SCALE_ROWS, 1], pl.FP32],
     reduce_signal: pld.DistributedTensor[[N_RANKS, 1], pl.INT32],
     sync_signal: pld.DistributedTensor[[N_RANKS, 1], pl.INT32],
     my_rank: pl.Scalar[pl.INT32],
 ):
     evict_tid = _evict_l2(l2_evict, l2_evict_sink)
     o_proj_tp_core(
-        o_packed, evict_tid, wo_a_shard, wo_b_shard, wo_b_scale, attn_out,
-        reduce_window, reduce_signal, sync_signal, my_rank, FIRST_EPOCH,
+        o_packed,
+        evict_tid,
+        wo_a_shard,
+        wo_b_shard,
+        wo_b_scale,
+        attn_out,
+        reduce_window,
+        scale_window,
+        reduce_signal,
+        sync_signal,
+        my_rank,
+        FIRST_EPOCH,
     )
-    # A real output read orders each rank's second epoch after its first result.
-    # No signal clear occurs between epochs; this validates both alternating lanes.
     with pl.at(level=pl.Level.CORE_GROUP, name_hint="oproj_validation_epoch_handoff") as first_done:
         _completed = pl.read(attn_out, [0, 0])
     o_proj_tp_core(
-        o_packed_epoch2, first_done, wo_a_shard, wo_b_shard, wo_b_scale, attn_out_epoch2,
-        reduce_window, reduce_signal, sync_signal, my_rank, FIRST_EPOCH + 1,
+        o_packed_epoch2,
+        first_done,
+        wo_a_shard,
+        wo_b_shard,
+        wo_b_scale,
+        attn_out_epoch2,
+        reduce_window,
+        scale_window,
+        reduce_signal,
+        sync_signal,
+        my_rank,
+        FIRST_EPOCH + 1,
     )
     clear_oproj_signals(attn_out_epoch2, reduce_signal, sync_signal)
     return attn_out_epoch2
@@ -608,17 +614,15 @@ def l3_o_proj_tp_reuse(
     attn_out_epoch2: pl.Out[pl.Tensor[[N_RANKS, T, D], pl.BF16]],
 ):
     reduce_window_buf = pld.alloc_window_buffer([REDUCE_WINDOW_ROWS, D], dtype=pl.FP32)
+    scale_window_buf = pld.alloc_window_buffer([OPROJ_SCALE_ROWS, 1], dtype=pl.FP32)
     reduce_signal_buf = pld.alloc_window_buffer([N_RANKS, 1], dtype=pl.INT32)
     sync_signal_buf = pld.alloc_window_buffer([N_RANKS, 1], dtype=pl.INT32)
     for r in pl.range(pld.world_size()):
         reduce_window = pld.window(reduce_window_buf, [REDUCE_WINDOW_ROWS, D], dtype=pl.FP32)
+        scale_window = pld.window(scale_window_buf, [OPROJ_SCALE_ROWS, 1], dtype=pl.FP32)
         reduce_signal = pld.window(reduce_signal_buf, [N_RANKS, 1], dtype=pl.INT32)
         sync_signal = pld.window(sync_signal_buf, [N_RANKS, 1], dtype=pl.INT32)
-        o_proj_tp_reuse_test(
-            o_packed[r], o_packed_epoch2[r], wo_a_shard[r], wo_b_shard[r], wo_b_scale[r],
-            l2_evict[r], l2_evict_sink[r], attn_out[r], attn_out_epoch2[r],
-            reduce_window, reduce_signal, sync_signal, r, device=r,
-        )
+        o_proj_tp_reuse_test(o_packed[r], o_packed_epoch2[r], wo_a_shard[r], wo_b_shard[r], wo_b_scale[r], l2_evict[r], l2_evict_sink[r], attn_out[r], attn_out_epoch2[r], reduce_window, scale_window, reduce_signal, sync_signal, r, device=r)
 
 
 # === Golden =================================================================

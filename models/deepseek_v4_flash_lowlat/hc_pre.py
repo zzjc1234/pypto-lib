@@ -25,11 +25,20 @@ comb_sinkhorn / mix_x), ordered by their GM read/write dependencies. mix_hc(24) 
 """
 
 import pypto.language as pl
-from config import FLASH as M
-from hc_pre_numerics import hc_sigmoid_math, hc_softmax_exp_math
-from decode_shapes import DECODE_BATCH, DECODE_SEQ
+if __package__:
+    from .config import FLASH as M
+else:
+    from config import FLASH as M
+if __package__:
+    from .hc_pre_numerics import hc_sigmoid_math, hc_softmax_exp_math
+else:
+    from hc_pre_numerics import hc_sigmoid_math, hc_softmax_exp_math
+if __package__:
+    from .decode_shapes import DECODE_BATCH, DECODE_SEQ
+else:
+    from decode_shapes import DECODE_BATCH, DECODE_SEQ
 
-T_DYN = pl.dynamic("T_DYN")
+T_DYN = pl.dynamic('LOWLAT_TARGET_T_DYN')
 D = M.hidden_size
 HC_MULT = M.hc_mult
 MIX_HC = M.mix_hc
@@ -726,7 +735,11 @@ def _golden_a2a3_cube_linear(x_flat_2d, hc_fn):
 def golden_hc_pre(tensors):
     """Torch reference matching the target HC-pre reduction and nonlinearities."""
     import torch
-    from utils import fp32_matmul_fp32
+
+    if __package__:
+        from .utils import fp32_matmul_fp32
+    else:
+        from utils import fp32_matmul_fp32
 
     x = tensors["x"].float()
     hc_fn = tensors["hc_fn"].float()

@@ -18,8 +18,20 @@ from typing import Any, Callable
 
 import torch
 
-from config import FLASH as M, INT8_AMAX_EPS, INT8_SCALE_MAX
-from decode_shapes import BLOCK_SIZE, C4A_COMPRESSOR_BLOCK_SIZE, C128_COMPRESSOR_BLOCK_SIZE, DECODE_BATCH, DECODE_SEQ
+if __package__:
+    from .config import FLASH as M, INT8_AMAX_EPS, INT8_SCALE_MAX
+else:
+    from config import FLASH as M, INT8_AMAX_EPS, INT8_SCALE_MAX
+if __package__:
+    from .decode_shapes import (
+        BLOCK_SIZE,
+        C4A_COMPRESSOR_BLOCK_SIZE,
+        C128_COMPRESSOR_BLOCK_SIZE,
+        DECODE_BATCH,
+        DECODE_SEQ,
+    )
+else:
+    from decode_shapes import BLOCK_SIZE, C4A_COMPRESSOR_BLOCK_SIZE, C128_COMPRESSOR_BLOCK_SIZE, DECODE_BATCH, DECODE_SEQ
 
 
 # Validation default; runtime operators receive actual request positions.
