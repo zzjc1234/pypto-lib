@@ -8,6 +8,7 @@
 # -----------------------------------------------------------------------------------------------------------
 
 import pypto.language as pl
+from ..target.fp32_numerics import rne_exp_nonpositive, rne_exp_signed
 
 import pypto.language.distributed as pld
 
@@ -627,8 +628,27 @@ def sparse_attn_csa_head_packed(
                     qk_scaled = pl.mul(qk_raw, SOFTMAX_SCALE)
                     qk_scores = pl.col_expand_add(qk_scaled, qk_bias_row)
                     qk_mi = pl.row_max(qk_scores)
-                    qk_exp = pl.exp(pl.row_expand_sub(qk_scores, qk_mi))
-                    qk_li = pl.row_sum(qk_exp)
+                    qk_shifted = pl.create_tensor([HEAD_SHARD_QK_M_BOX, ATTN_K_TILE], dtype=pl.FP32)
+                    qk_shifted = pl.row_expand_sub(qk_scores, qk_mi)
+                    qk_exp = rne_exp_nonpositive(qk_shifted, rows=HEAD_SHARD_QK_M_BOX, cols=ATTN_K_TILE)
+                    # Same split-half FP32 order as the owning Torch reference.
+                    qk_sum_columns = pl.transpose(qk_exp, 0, 1)
+                    qk_sum_16_left = qk_sum_columns[0:16, :]
+                    qk_sum_16_right = qk_sum_columns[16:32, :]
+                    qk_sum_16 = pl.add(qk_sum_16_left, qk_sum_16_right)
+                    qk_sum_8_left = qk_sum_16[0:8, :]
+                    qk_sum_8_right = qk_sum_16[8:16, :]
+                    qk_sum_8 = pl.add(qk_sum_8_left, qk_sum_8_right)
+                    qk_sum_4_left = qk_sum_8[0:4, :]
+                    qk_sum_4_right = qk_sum_8[4:8, :]
+                    qk_sum_4 = pl.add(qk_sum_4_left, qk_sum_4_right)
+                    qk_sum_2_left = qk_sum_4[0:2, :]
+                    qk_sum_2_right = qk_sum_4[2:4, :]
+                    qk_sum_2 = pl.add(qk_sum_2_left, qk_sum_2_right)
+                    qk_sum_1_left = qk_sum_2[0:1, :]
+                    qk_sum_1_right = qk_sum_2[1:2, :]
+                    qk_sum_1 = pl.add(qk_sum_1_left, qk_sum_1_right)
+                    qk_li = pl.reshape(qk_sum_1, [HEAD_SHARD_QK_M_BOX, 1])
                     qk_exp_bf16 = pl.cast(qk_exp, target_type=pl.BF16, mode="rint")
                     qk_oi = pl.matmul(qk_exp_bf16, qk_kv, out_dtype=pl.FP32)
                     qk_row = qk_token_base + qk_sb * HEAD_SHARD_QK_M_BOX
@@ -659,8 +679,17 @@ def sparse_attn_csa_head_packed(
             m_cur_li = sparse_blk_li[m_row : m_row + H_TILE, 0 : 1]
             m_cur_oi = sparse_blk_oi[m_row : m_row + H_TILE, 0 : HEAD_DIM]
             m_mi_new = pl.maximum(m_mi, m_cur_mi)
-            m_alpha = pl.exp(pl.sub(m_mi, m_mi_new))
-            m_beta = pl.exp(pl.sub(m_cur_mi, m_mi_new))
+            csa_alpha_delta = pl.create_tensor([H_TILE, 1], dtype=pl.FP32)
+            csa_alpha_delta = pl.sub(m_mi, m_mi_new)
+            csa_beta_delta = pl.create_tensor([H_TILE, 1], dtype=pl.FP32)
+            csa_beta_delta = pl.sub(m_cur_mi, m_mi_new)
+            # Invalid compressed blocks have mi=-3e38. The differences are
+            # exactly zero or far below FP32 exp underflow, so keep the fast path.
+            m_alpha = pl.exp(csa_alpha_delta)
+            m_beta = pl.exp(csa_beta_delta)
+            if pl.read(valid_block_mask, [m_t, m_sb]) > 0:
+                m_alpha = rne_exp_signed(csa_alpha_delta, rows=H_TILE, cols=1, safe_zero=True, negate=False)
+                m_beta = rne_exp_signed(csa_beta_delta, rows=H_TILE, cols=1, safe_zero=True, negate=False)
             m_li = pl.add(pl.mul(m_alpha, m_li), pl.mul(m_beta, m_cur_li))
             m_oi = pl.add(pl.row_expand_mul(m_oi, m_alpha), pl.row_expand_mul(m_cur_oi, m_beta))
             m_mi = m_mi_new
@@ -668,8 +697,62 @@ def sparse_attn_csa_head_packed(
         m_h_global = head_base + m_h0
         n_sink_bias = pl.reshape(attn_sink[m_h_global : m_h_global + H_TILE], [H_TILE, 1])
         n_sink_tile = pl.add(pl.sub(m_mi, m_mi), n_sink_bias)
-        n_denom = pl.add(m_li, pl.exp(pl.sub(n_sink_tile, m_mi)))
-        n_full = pl.row_expand_div(m_oi, n_denom)[0 : H_TILE, 0 : HEAD_DIM]
+        csa_sink_delta = pl.create_tensor([H_TILE, 1], dtype=pl.FP32)
+        csa_sink_delta = pl.sub(n_sink_tile, m_mi)
+        csa_sink_exp = rne_exp_signed(csa_sink_delta, rows=H_TILE, cols=1, safe_zero=True, negate=False)
+        n_denom = pl.add(m_li, csa_sink_exp)
+        n_div_seed = pl.row_expand_div(m_oi, n_denom)[0:H_TILE, 0:HEAD_DIM]
+        n_div_left_v = m_oi[:, 0:0 + 256]
+        n_div_left_estimate = n_div_seed[:, 0:0 + 256]
+        n_div_left_zero = pl.sub(n_div_left_v, n_div_left_v)
+        n_div_left_expanded = pl.row_expand_add(n_div_left_zero, n_denom)
+        n_div_left_a_split = pl.mul(n_div_left_estimate, 4097.0)
+        n_div_left_a_delta = pl.sub(n_div_left_a_split, n_div_left_estimate)
+        n_div_left_a_hi = pl.sub(n_div_left_a_split, n_div_left_a_delta)
+        n_div_left_a_lo = pl.sub(n_div_left_estimate, n_div_left_a_hi)
+        n_div_left_b_split = pl.mul(n_div_left_expanded, 4097.0)
+        n_div_left_b_delta = pl.sub(n_div_left_b_split, n_div_left_expanded)
+        n_div_left_b_hi = pl.sub(n_div_left_b_split, n_div_left_b_delta)
+        n_div_left_b_lo = pl.sub(n_div_left_expanded, n_div_left_b_hi)
+        n_div_left_product = pl.mul(n_div_left_estimate, n_div_left_expanded)
+        n_div_left_high_product = pl.mul(n_div_left_a_hi, n_div_left_b_hi)
+        n_div_left_error0 = pl.sub(n_div_left_high_product, n_div_left_product)
+        n_div_left_high_low = pl.mul(n_div_left_a_hi, n_div_left_b_lo)
+        n_div_left_error1 = pl.add(n_div_left_error0, n_div_left_high_low)
+        n_div_left_low_high = pl.mul(n_div_left_a_lo, n_div_left_b_hi)
+        n_div_left_error2 = pl.add(n_div_left_error1, n_div_left_low_high)
+        n_div_left_low_product = pl.mul(n_div_left_a_lo, n_div_left_b_lo)
+        n_div_left_error = pl.add(n_div_left_error2, n_div_left_low_product)
+        n_div_left_residual_hi = pl.sub(n_div_left_v, n_div_left_product)
+        n_div_left_residual = pl.sub(n_div_left_residual_hi, n_div_left_error)
+        n_div_left_correction = pl.div(n_div_left_residual, n_div_left_expanded)
+        n_div_left_fixed = pl.add(n_div_left_estimate, n_div_left_correction)
+        n_div_right_v = m_oi[:, 256:256 + 256]
+        n_div_right_estimate = n_div_seed[:, 256:256 + 256]
+        n_div_right_zero = pl.sub(n_div_right_v, n_div_right_v)
+        n_div_right_expanded = pl.row_expand_add(n_div_right_zero, n_denom)
+        n_div_right_a_split = pl.mul(n_div_right_estimate, 4097.0)
+        n_div_right_a_delta = pl.sub(n_div_right_a_split, n_div_right_estimate)
+        n_div_right_a_hi = pl.sub(n_div_right_a_split, n_div_right_a_delta)
+        n_div_right_a_lo = pl.sub(n_div_right_estimate, n_div_right_a_hi)
+        n_div_right_b_split = pl.mul(n_div_right_expanded, 4097.0)
+        n_div_right_b_delta = pl.sub(n_div_right_b_split, n_div_right_expanded)
+        n_div_right_b_hi = pl.sub(n_div_right_b_split, n_div_right_b_delta)
+        n_div_right_b_lo = pl.sub(n_div_right_expanded, n_div_right_b_hi)
+        n_div_right_product = pl.mul(n_div_right_estimate, n_div_right_expanded)
+        n_div_right_high_product = pl.mul(n_div_right_a_hi, n_div_right_b_hi)
+        n_div_right_error0 = pl.sub(n_div_right_high_product, n_div_right_product)
+        n_div_right_high_low = pl.mul(n_div_right_a_hi, n_div_right_b_lo)
+        n_div_right_error1 = pl.add(n_div_right_error0, n_div_right_high_low)
+        n_div_right_low_high = pl.mul(n_div_right_a_lo, n_div_right_b_hi)
+        n_div_right_error2 = pl.add(n_div_right_error1, n_div_right_low_high)
+        n_div_right_low_product = pl.mul(n_div_right_a_lo, n_div_right_b_lo)
+        n_div_right_error = pl.add(n_div_right_error2, n_div_right_low_product)
+        n_div_right_residual_hi = pl.sub(n_div_right_v, n_div_right_product)
+        n_div_right_residual = pl.sub(n_div_right_residual_hi, n_div_right_error)
+        n_div_right_correction = pl.div(n_div_right_residual, n_div_right_expanded)
+        n_div_right_fixed = pl.add(n_div_right_estimate, n_div_right_correction)
+        n_full = pl.concat(n_div_left_fixed, n_div_right_fixed)
         n_bf16 = pl.cast(n_full, target_type=pl.BF16, mode="rint")
 
         m_rope = n_full[0 : H_TILE, NOPE_DIM : HEAD_DIM]
