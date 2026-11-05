@@ -104,6 +104,7 @@ def main():
     parser.add_argument('--early-aic-control-map', action='store_true')
     parser.add_argument('--omit-optional-warmup', action='store_true')
     args = parser.parse_args()
+    os.environ.setdefault('HCCL_NPU_SOCKET_PORT_RANGE', 'auto')
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(2)
@@ -125,7 +126,8 @@ def main():
     report = dict(status='WAITING_RESOURCES_READY', CPU_ready_sha256=hashlib.sha256(args.cpu_ready.read_bytes()).hexdigest(),
                   code_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'],
                                                      cwd=Path(__file__).resolve().parents[2], text=True).strip(),
-                  automatic_model_retries=0, Worker_closed=False, NPU_started=False)
+                  automatic_model_retries=0, Worker_closed=False, NPU_started=False,
+                  hccl_npu_socket_port_range=os.environ['HCCL_NPU_SOCKET_PORT_RANGE'])
     atomic_json(args.output / 'execution.json', report)
     from pypto.backend import BackendType
     from pypto.ir.distributed_compiled_program import DistributedConfig

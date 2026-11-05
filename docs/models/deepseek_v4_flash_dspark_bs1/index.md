@@ -153,6 +153,9 @@ The `--run` command takes the same inputs plus `--cpu-ready`, `--lease-file`,
 `tools.dspark_bs1.owned` so its process marker predates all child creation.
 Ownership covers the exact host, boot, PID/starttime and token. Resource waiting
 allocates no HBM; real allocations begin only after the experiment is ready.
+The launcher defaults `HCCL_NPU_SOCKET_PORT_RANGE` to `auto` to avoid a shared
+NPU's fixed-port collision. An explicitly supplied value is preserved and the
+effective setting is recorded in `execution.json`.
 
 The tested 910C placement uses four complete physical boards with both chips,
 eight logical ranks and symmetric SIO pairs verified from actual HAL/SMI/topology.
