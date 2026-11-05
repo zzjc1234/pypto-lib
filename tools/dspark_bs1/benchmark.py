@@ -170,7 +170,8 @@ def main():
                     atomic_json(args.output / 'execution.json', report)
                     actual_free(worker, devices, ready['planned_device_bytes_per_rank'])
                     upload_start = time.monotonic()
-                    roots, common, outputs, single = plan.allocate(worker)
+                    roots, common, outputs, single = plan.allocate(
+                        worker, validate_allocation=lambda: actual_free(worker, devices))
                     report['allocation_upload_seconds'] = time.monotonic() - upload_start
                     report['actual_resident_roots'] = len(roots)
                     actual_free(worker, devices)

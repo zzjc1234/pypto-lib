@@ -9,6 +9,7 @@
 """Plan exact worker-owned model buffers from actual generated metadata."""
 
 import math
+import time
 
 import torch
 
@@ -108,7 +109,7 @@ class BufferPlan:
                     self.bundle.shard(spec, rank)
         self.bundle.recheck()
 
-    def allocate(self, worker):
+    def allocate(self, worker, *, validate_allocation=None):
         from pypto.runtime import StackedDeviceTensor
 
         roots = {}
@@ -127,12 +128,18 @@ class BufferPlan:
             shards = [worker.alloc_tensor(shape[1:], dtype, worker_id=rank)
                       for rank in range(shape[0])]
             roots[key] = StackedDeviceTensor(shards, shape, tuple(range(shape[0])))
+        if validate_allocation is not None:
+            validate_allocation()
+        checked_at = time.monotonic()
         for key in order:
             spec = self.specs[key]
             if key in self.step_host_keys:
                 continue
             for rank, shard in enumerate(roots[key].shards):
                 upload(worker, shard, self.bundle.shard(spec, rank), rank=rank, fill=spec.get('fill', 0))
+                if validate_allocation is not None and time.monotonic() - checked_at >= 30:
+                    validate_allocation()
+                    checked_at = time.monotonic()
         self.bundle.recheck()
         common = {name: roots[key] for name, key in self.native_keys.items()}
         frames = tuple({name: roots[key] for name, key in fields.items()} for fields in self.frame_keys)

@@ -228,5 +228,10 @@ def actual_free(worker, devices, planned=None):
         free = min(row['free_bytes'], info[0] if isinstance(info, tuple) else info.free_bytes)
         required = 2 * GiB + (planned[rank] if planned is not None else 0)
         if row['health'] != 'OK' or free <= required:
-            raise RuntimeError('Actual post-Worker device capacity no longer satisfies the experiment')
+            driver_free = info[0] if isinstance(info, tuple) else info.free_bytes
+            raise RuntimeError(
+                'Actual post-Worker device capacity no longer satisfies the experiment: '
+                f'rank={rank} device={device} health={row["health"]} '
+                f'smi_free_bytes={row["free_bytes"]} driver_free_bytes={driver_free} '
+                f'required_bytes={required} planned_bytes={planned[rank] if planned is not None else 0}')
     return current
