@@ -939,7 +939,8 @@ def l3_decode_fwd(
     reduce_window_buf = pld.alloc_window_buffer([REDUCE_WINDOW_ROWS, D], dtype=pl.FP32)
     reduce_signal_buf = pld.alloc_window_buffer([N_RANKS, 1], dtype=pl.INT32)
     embed_window_buf = pld.alloc_window_buffer([T, D], dtype=pl.BF16)
-    embed_signal_buf = pld.alloc_window_buffer([N_RANKS, 1], dtype=pl.INT32)
+    # Keep neighboring windows outside the scalar counter cache line.
+    embed_signal_buf = pld.alloc_window_buffer(64)
     # The CSA o-projection reduces INT32 partials plus their per-rank activation
     # scale, so it carries its own windows; its counters are monotonic across the
     # forward's CSA layers and cleared once at the end, like the MoE's.

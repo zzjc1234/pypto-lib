@@ -646,7 +646,8 @@ def native_cycles(
     s_tok_o_window_buffer = pld.alloc_window_buffer([6, 4096], dtype=pl.BF16)
     s_tok_o_signal_buffer = pld.alloc_window_buffer([8, 1], dtype=pl.INT32)
     s_embed_window_buffer = pld.alloc_window_buffer([6, 4096], dtype=pl.BF16)
-    s_embed_signal_buffer = pld.alloc_window_buffer([8, 1], dtype=pl.INT32)
+    # Isolate scalar cache-line writes from the following LM hidden window.
+    s_embed_signal_buffer = pld.alloc_window_buffer(64)
     s_lm_head_hidden_window_buffer = pld.alloc_window_buffer([48, 4096], dtype=pl.BF16)
     s_lm_head_hidden_done_buffer = pld.alloc_window_buffer([8, 1], dtype=pl.INT32)
     s_lm_head_logits_window_buffer = pld.alloc_window_buffer([6, 129280], dtype=pl.FP32)
