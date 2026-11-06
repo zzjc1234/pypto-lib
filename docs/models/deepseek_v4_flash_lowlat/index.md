@@ -488,3 +488,20 @@ this composition. A later complete entry must retain the existing packet,
 commit, history-ring, final-state and complete-output checks. Until that entry
 is built and measured from a clean checkout, both full-pipeline reproduction and
 numerical qualification remain pending.
+
+## Fast arithmetic delivery
+
+This branch restores the pre-alignment hardware arithmetic in target HC,
+RMS, QKV and sparse attention. It keeps W8A8 tensors, the existing public
+interfaces, request scheduling, ordered collectives, buffer padding and
+ownership checks. Golden functions and comparators remain enabled with their
+existing thresholds.
+
+Fast arithmetic does not guarantee bitwise agreement with the refined
+reference arithmetic. FP32 reductions and transcendental approximations can
+change greedy token choices and EOS positions. Model-quality scores and
+whole-request speed for this port must be evaluated separately; a historical
+measurement is not a measurement of the current commit.
+
+The validated reference-arithmetic source is preserved on
+[the reference branch](https://github.com/zzjc1234/pypto-lib/tree/feat/dsv4-dspark-bs1-reference).

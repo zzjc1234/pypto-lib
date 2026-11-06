@@ -170,6 +170,8 @@ def compile_program(profile, *, cache_root, device_ids, ptoas_timeout_seconds=18
         Worker=0,
         NPU=0,
         native=0,
+        arithmetic_contract="historical_fast_approximation",
+        reference_bitwise_guaranteed=False,
     )
 
 
