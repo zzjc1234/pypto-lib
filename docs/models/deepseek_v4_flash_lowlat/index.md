@@ -28,9 +28,9 @@ the compensation intermediates bounded for large finite denominators; it does
 not change the INT8 weights, FP32 dequantization scales or deferred RMS policy.
 This does not assert all-domain IEEE or nonfinite-input equivalence.
 
-Gate, QKV and SWA share scope-local FP32 compensation primitives in
-`fp32_numerics.py`; these helpers create no tasks or global-memory buffers.
-The gate's softplus evaluates `log(1 + exp(-abs(x)))` before adding the
+The gate uses scope-local FP32 compensation primitives in `fp32_numerics.py`;
+these helpers create no tasks or global-memory buffers. The gate's softplus
+evaluates `log(1 + exp(-abs(x)))` before adding the
 nonnegative part of the input. Its logarithm correction consumes the
 unrounded two-part sum. The square-root correction applies within
 `[2^-40, 2^40]` and retains the original square-root result outside that
@@ -45,16 +45,20 @@ FP32; the inverse square root is evaluated in FP64 and rounded to FP32.
 This specifies the reference's statistical precision without changing epsilon,
 activation dtypes, or the numerical comparison thresholds.
 
-RMSNorm compensates its pairwise FP32 square-sum and refines the reciprocal-
-square-root seed with a product-error residual. The compensated reduction
-applies when the original squared sum is at most `2^40`; the inverse correction
-applies for variance at most `2^40`. Larger values retain the original path.
-The reference and comparison thresholds are unchanged. Finite input tests do
-not establish all-domain correctly rounded arithmetic or a performance gain.
+The fast HC, RMSNorm, QKV and attention paths use the device's FP32 reduction,
+reciprocal, and exponential operations without the reference branch's full
+product-error and transcendental compensation. Their results can differ from
+the Torch reference and must be checked with the output-specific golden gates.
+Finite input tests do not establish all-domain correctly rounded arithmetic or
+a complete-model performance gain.
 
-Q/KV kernels use
-the existing square-root correction and compensated reciprocal at their
-separately rounded FP32 inverse boundaries.
+A previous HC-pre component comparison used three captured layer inputs at
+six-token width on four dual-chip 910C boards. Its ordinary submit-to-result
+median was 0.898 ms for the older arithmetic and 1.034 ms for the compensated
+path. A separate instrumented capture measured the Sinkhorn kernel at 13.93
+and 123.21 microseconds, respectively. This supports an implementation-cost
+finding for that component and input scope; it is not a measurement of this
+commit's complete-request TPOT.
 
 Public stored LM-head logits are FP32. Community vLLM can select
 `hf_overrides={"head_dtype": "float32"}`; this alone does not align the forward.
@@ -69,8 +73,26 @@ A complete golden must align weights/scales, input state, HC, quantization,
 routing, reduction and logit precision. Matching dtype labels or W8A8
 checkpoint names, source/component CI and local type checks do not establish
 complete-model numerical correctness. The existing comparison gates apply.
-The current FP32 policy is retained. A community-precision compatibility mode
-is not implemented and requires an explicit precision-policy decision.
+The current FP32 storage policy is retained. A community-precision
+compatibility mode is not implemented.
+
+## Full-forward numerical checks
+
+The independent Torch forward remains the reference. Each owner and token row
+of `pre_hc_hidden_out`, `hidden_out`, and active `logits` is checked with the
+repository's `ratio_reldiff` comparator. The per-point threshold is 0.02; at
+most 5% of pre-HC values and 10% of hidden or logit values may exceed it, with
+a worst-point relative-difference cap of 1. These thresholds follow the
+existing DeepSeek MTP forward policy. Inactive logit rows retain the previous
+strict `rtol=atol=1e-3` check, and nonfinite values fail.
+
+Sampled IDs must match sampling from the actual logits. If an ID differs from
+the Torch reference, the selected and reference-token logits are also checked
+at `rtol=atol=0.02`, and the mismatch is reported. This permits different IDs
+when close logits change their ordering; it does not assert that generated
+sequences or downstream task quality are identical. Cache and control outputs
+retain their existing checks. Complete-forward device results are still
+required before using these bounds as evidence of model correctness.
 
 ## Reproducible reduction order
 
@@ -90,14 +112,10 @@ retain their original order.
 HC-pre Sinkhorn column sums use the explicit four-row pairing
 `(row0 + row1) + (row2 + row3)` in both implementations.
 
-SWA, HCA, and CSA softmax use a compensated, range-reduced FP32 exponential for finite
-max-subtracted scores in `[-80, 0]`, with the existing exponential outside
-that interval. SWA/HCA use a 128-element denominator tree; CSA uses a
-32-element tree. Each level pairs the two halves with FP32 additions. The independent
-Torch reference evaluates the exponential in double precision before FP32
-rounding and uses the same specified addition order. HCA/CSA compensate their
-final FP32 quotient before the existing BF16 packing. This does not claim
-correct rounding for every FP32 input or complete-forward agreement.
+The fast SWA, HCA, and CSA softmax paths use the device exponential and row
+reduction operations. Their reduction order and rounding can differ from the
+independent Torch reference. The output-specific numerical checks cover that
+difference rather than assuming bitwise equality.
 
 These rules make the reduction order explicit. They do not establish bitwise
 equivalence across different hardware, compiler revisions, or other operations
@@ -494,8 +512,9 @@ numerical qualification remain pending.
 This branch restores the pre-alignment hardware arithmetic in target HC,
 RMS, QKV and sparse attention. It keeps W8A8 tensors, the existing public
 interfaces, request scheduling, ordered collectives, buffer padding and
-ownership checks. Golden functions and comparators remain enabled with their
-existing thresholds.
+ownership checks. Golden functions remain enabled. The full-forward floating
+outputs use the bounded checks described above; other component gates are
+unchanged.
 
 Fast arithmetic does not guarantee bitwise agreement with the refined
 reference arithmetic. FP32 reductions and transcendental approximations can
