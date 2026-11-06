@@ -10,7 +10,6 @@
 """CPU tests for the DSpark full-forward numerical acceptance policy."""
 
 import ast
-import importlib.util
 from pathlib import Path
 import unittest
 
@@ -20,11 +19,7 @@ from golden.validation import ratio_reldiff, validate_golden
 
 
 def _load_policy():
-    """Load the actual host comparators in CPU-only CI without a PyPTO wheel."""
-    if importlib.util.find_spec("pypto") is not None:
-        from models.deepseek_v4_flash_lowlat import decode_fwd
-
-        return vars(decode_fwd)
+    """Load the actual host comparator source without importing device libraries."""
     model = Path(__file__).resolve().parents[2] / "models" / "deepseek_v4_flash_lowlat"
     sample_tree = ast.parse((model / "sample.py").read_text())
     eps = next(n for n in sample_tree.body if isinstance(n, ast.Assign)
