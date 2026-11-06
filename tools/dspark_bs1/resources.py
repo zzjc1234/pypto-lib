@@ -169,6 +169,7 @@ def claim(planned, lease_file, *, wait_seconds=90000, execution_lock=None):
     lock = lease_file.with_name('device-owner.lock').open('a+')
     lane = Path(execution_lock).open('a+') if execution_lock is not None else None
     record = None
+    lease_contents = None
     while record is None:
         try:
             if lane is not None:
@@ -188,7 +189,8 @@ def claim(planned, lease_file, *, wait_seconds=90000, execution_lock=None):
                           capacity=current, topology=links, created_epoch=time.time())
             temporary = lease_file.with_name(lease_file.name + '.' + uuid.uuid4().hex + '.tmp')
             try:
-                temporary.write_text(json.dumps(record, indent=2) + '\n')
+                lease_contents = json.dumps(record, indent=2) + '\n'
+                temporary.write_text(lease_contents)
                 os.link(temporary, lease_file)
             finally:
                 temporary.unlink(missing_ok=True)
@@ -207,7 +209,9 @@ def claim(planned, lease_file, *, wait_seconds=90000, execution_lock=None):
         yield record
     finally:
         remaining = owned_children()
-        if not remaining and lease_file.exists() and json.loads(lease_file.read_text()) == record:
+        # JSON stringifies integer snapshot keys. Compare the exact record we
+        # published so serialization cannot prevent release of our own lease.
+        if not remaining and lease_file.exists() and lease_file.read_text() == lease_contents:
             lease_file.unlink()
         elif remaining:
             lease_file.with_name('release-pending.json').write_text(json.dumps(
